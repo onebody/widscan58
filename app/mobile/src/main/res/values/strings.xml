@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The default resources are Chinese, so a device in any language the app does
+     not ship shows Chinese: 中文是默认。English lives in ../values-en.
+     Unit symbols (dBFS, MHz) and the band letters stay as they are in both.
+     GPL-3.0-or-later. -->
+<resources>
+    <string name="app_name">Widscan58</string>
+    <string name="probe_name">USB 探测</string>
+    <string name="plug_in">请用 USB-C 连接 Widscan58 板卡。</string>
+    <string name="scan_start">开始</string>
+    <string name="scan_stop">停止</string>
+    <string name="holds">峰值保持</string>
+    <string name="chip_max">峰值</string>
+    <string name="chip_avg">均值</string>
+
+    <string name="status_sim">模拟设备</string>
+    <string name="status_connecting">连接中…</string>
+    <string name="status_rot">%1$.0f 圈/秒</string>
+    <string name="status_hops">%1$d 次跳频</string>
+    <string name="status_gain">增益 %1$d</string>
+    <string name="status_link">链路 %1$.0f%%</string>
+
+    <string name="waiting_spectrum">等待频谱数据…</string>
+    <string name="axis_dbfs_bin">dBFS/格</string>
+    <string name="waterfall_age">-%1$.1f秒</string>
+    <string name="tile_snr">信噪比 %1$s</string>
+    <string name="tile_floor">底噪 %1$s</string>
+
+    <string name="badge_stale">数据过期</string>
+    <string name="badge_signal">有信号</string>
+    <string name="badge_clipping">削波</string>
+    <string name="badge_spur">杂散</string>
+    <string name="badge_spur_masked">杂散已抑制</string>
+    <string name="badge_filter_edge">滤波边缘</string>
+
+    <string name="note_paused">已暂停</string>
+    <string name="note_disconnected">已断开：%1$s</string>
+    <string name="note_not_connected">未连接：%1$s</string>
+    <string name="note_no_data">无数据，重新进入监听模式</string>
+    <string name="note_open_failed">打开失败：%1$s</string>
+    <string name="note_no_cdc">%1$s 不是 CDC 串口</string>
+</resources>

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- English. The unqualified ../values/strings.xml is Chinese and is the fallback
+     for every other language. GPL-3.0-or-later. -->
+<resources>
+    <string name="app_name">Widscan58</string>
+    <string name="probe_name">USB probe</string>
+    <string name="plug_in">Plug in the Widscan58 board over USB-C.</string>
+    <string name="scan_start">Start</string>
+    <string name="scan_stop">Stop</string>
+    <string name="holds">Holds</string>
+    <string name="chip_max">Max</string>
+    <string name="chip_avg">Avg</string>
+
+    <string name="status_sim">simulated device</string>
+    <string name="status_connecting">connecting…</string>
+    <string name="status_rot">%1$.0f rot/s</string>
+    <string name="status_hops">%1$d hops</string>
+    <string name="status_gain">gain %1$d</string>
+    <string name="status_link">link %1$.0f%%</string>
+
+    <string name="waiting_spectrum">Waiting for spectrum frames…</string>
+    <string name="axis_dbfs_bin">dBFS/bin</string>
+    <string name="waterfall_age">-%1$.1fs</string>
+    <string name="tile_snr">SNR %1$s</string>
+    <string name="tile_floor">floor %1$s</string>
+
+    <string name="badge_stale">stale</string>
+    <string name="badge_signal">signal</string>
+    <string name="badge_clipping">clipping</string>
+    <string name="badge_spur">spur</string>
+    <string name="badge_spur_masked">spur masked</string>
+    <string name="badge_filter_edge">filter edge</string>
+
+    <string name="note_paused">paused</string>
+    <string name="note_disconnected">disconnected: %1$s</string>
+    <string name="note_not_connected">not connected: %1$s</string>
+    <string name="note_no_data">no data: re-arming monitor mode</string>
+    <string name="note_open_failed">open failed: %1$s</string>
+    <string name="note_no_cdc">%1$s is not a CDC port</string>
+</resources>
