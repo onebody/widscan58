@@ -1,32 +1,33 @@
 // Detection events options (the gear by Clear): what the event list shows,
 // keeping the screen on while a device is connected, the lap rules
-// (RhModel.lapRules) and voice callouts of lap times. Changes apply at once.
+// (TimerModel.lapRules) and voice callouts of lap times. Changes apply at once.
 // GPL-3.0-or-later.
 import type { App, UiSettings } from "../model/app";
 import type { LapRules } from "../model/laps";
-import { LAP_COUNT_MAX, LAP_COUNT_MIN, MIN_LAP_MAX_S } from "../model/rh";
+import { LAP_COUNT_MAX, LAP_COUNT_MIN, MIN_LAP_MAX_S } from "../model/timer";
 import { el } from "../util/canvas";
-import { lapCallout, speak, speechSupported } from "../util/speech";
+import { lapCallout, onVoicesChanged, speak, speechAvailable } from "../util/speech";
 import { ScreenWake } from "../util/wakeLock";
 
-type Flag = "rhShowCrossings" | "rhShowFastest" | "keepScreenOn" | "voiceOn";
+type Flag = "timerShowCrossings" | "timerShowFastest" | "keepScreenOn" | "voiceOn";
 type Slider = "voiceVolume" | "voiceRate" | "voicePitch";
 type RuleFlag = "minLapOn" | "fastestOn";
 type RuleValue = "minLapS" | "count";
 
-export class RhEventsDialog {
+export class TimerEventsDialog {
   readonly el: HTMLDialogElement;
   private boxes = new Map<Flag, HTMLInputElement>();
   private rules: { flag: RuleFlag; value: RuleValue; box: HTMLInputElement; input: HTMLInputElement }[] = [];
   private showFastest!: HTMLLabelElement;
   private sliders: { key: Slider; input: HTMLInputElement; out: HTMLElement; fmt: (v: number) => string }[] = [];
   private voiceControls = el("div", { class: "voice-controls" });
+  private voiceOption!: HTMLLabelElement;
+  private voiceError = el("div", { class: "options-error" }, "Speech is not available: this browser has no voices.");
 
   constructor(private app: App) {
     const closeBtn = el("button", { class: "primary", autofocus: "" }, "Close");
     closeBtn.onclick = () => this.el.close();
     const wake = ScreenWake.supported();
-    const voice = speechSupported();
     const testBtn = el("button", { title: "Speak a callout for the selected seat" }, "Test");
     testBtn.onclick = () => this.testCallout();
     this.voiceControls.append(
@@ -40,8 +41,8 @@ export class RhEventsDialog {
       { class: "options-dialog" },
       el("h2", {}, "Detection events"),
       el("h3", {}, "Display"),
-      this.option("rhShowCrossings", "Split Enter/Exit events", "List each crossing's enter and exit, besides the passes."),
-      (this.showFastest = this.option("rhShowFastest", "Fastest consecutive", "List each new fastest run. The seats show it either way.")),
+      this.option("timerShowCrossings", "Split Enter/Exit events", "List each crossing's enter and exit, besides the passes."),
+      (this.showFastest = this.option("timerShowFastest", "Fastest consecutive", "List each new fastest run. The seats show it either way.")),
       this.option(
         "keepScreenOn",
         "Keep screen on",
@@ -52,11 +53,13 @@ export class RhEventsDialog {
       this.rule("minLapOn", "minLapS", "Minimum lap time", "s", 0, MIN_LAP_MAX_S, "Ignore passes sooner than this after the last one."),
       this.rule("fastestOn", "count", "Fastest consecutive laps", "laps", LAP_COUNT_MIN, LAP_COUNT_MAX, "Each seat's fastest run of this many laps."),
       el("h3", {}, "Voice callouts"),
-      this.option("voiceOn", "Announce laps", "Each lap's channel and time, e.g. “R4 13.7”.", !voice),
-      voice ? this.voiceControls : el("div", { class: "options-error" }, "Speech is not available in this browser."),
+      (this.voiceOption = this.option("voiceOn", "Announce laps", "Each lap's channel and time, e.g. “R4 13.7”.")),
+      this.voiceControls,
+      this.voiceError,
       el("div", { class: "flash-buttons" }, closeBtn),
     );
     this.boxes.get("voiceOn")!.addEventListener("change", () => this.syncVoice());
+    onVoicesChanged(() => this.syncVoice());
   }
 
   open() {
@@ -66,8 +69,15 @@ export class RhEventsDialog {
     this.el.showModal();
   }
 
+  /** Greyed out (and shown off, the setting kept) while there is no voice. */
   private syncVoice() {
-    this.voiceControls.hidden = !this.app.settings.voiceOn;
+    const voice = speechAvailable();
+    const box = this.boxes.get("voiceOn")!;
+    box.disabled = !voice;
+    box.checked = voice && this.app.settings.voiceOn;
+    this.voiceOption.classList.toggle("disabled", !voice);
+    this.voiceError.hidden = voice;
+    this.voiceControls.hidden = !box.checked;
     for (const { key, input, out, fmt } of this.sliders) {
       input.value = String(this.app.settings[key]);
       out.textContent = fmt(this.app.settings[key]);
@@ -89,27 +99,27 @@ export class RhEventsDialog {
 
   /** The selected seat's channel (or the first one on) and a made-up lap. */
   private testCallout() {
-    const seats = this.app.rh.seats;
+    const seats = this.app.timer.seats;
     const s = seats.find((x) => x.index === this.app.settings.selected && x.channel) ?? seats.find((x) => x.channel);
     const lapS = 10 + Math.random() * 20;
     speak(lapCallout(s?.channel ?? "R1", lapS), voiceSettings(this.app.settings));
   }
 
   private syncRules() {
-    const r = this.app.rh.lapRules;
+    const r = this.app.timer.lapRules;
     for (const { flag, value, box, input } of this.rules) {
       box.checked = r[flag];
       input.disabled = !r[flag];
       input.value = String(r[value]);
     }
     // Nothing to list while no fastest run is kept.
-    const box = this.boxes.get("rhShowFastest")!;
+    const box = this.boxes.get("timerShowFastest")!;
     box.disabled = !r.fastestOn;
     this.showFastest.classList.toggle("disabled", !r.fastestOn);
   }
 
   private setRules(patch: Partial<LapRules>) {
-    this.app.rh.setLapRules(patch);
+    this.app.timer.setLapRules(patch);
     this.syncRules();
   }
 

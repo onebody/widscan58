@@ -1,4 +1,4 @@
-// Laps of one RotorHazard seat: a pass closer than the minimum lap to the
+// Laps of one lap timer seat: a pass closer than the minimum lap to the
 // previous counted pass is ignored (a false or double detection), and the
 // fastest `count` consecutive laps are kept. A break (Clear, a channel change,
 // a device restart or a reconnect) ends the run: the next pass has no lap
@@ -11,7 +11,7 @@ export interface LapRules {
   minLapOn: boolean; // ignore short laps
   minLapS: number; // shorter laps are ignored
 }
-export const DEFAULT_LAP_RULES: LapRules = { fastestOn: true, count: 3, minLapOn: true, minLapS: 8 };
+export const DEFAULT_LAP_RULES: LapRules = { fastestOn: true, count: 3, minLapOn: true, minLapS: 5 };
 
 export interface FastestRun {
   totalS: number;

@@ -15,6 +15,7 @@ export class Controls implements View {
   private lastDisabled: boolean | null = null;
   private body = el("div", { class: "controls" });
   private displayCtl: HTMLElement | null = null;
+  private fftSel: HTMLSelectElement | null = null;
   private binsSel: HTMLSelectElement | null = null;
   private lang = getLang();
 
@@ -24,6 +25,11 @@ export class Controls implements View {
   }
 
   private relabelOptions() {
+    if (this.fftSel)
+      for (const o of this.fftSel.options) {
+        const n = Number(o.value);
+        o.textContent = t("{n}-pt FFT ({m} samples)", { n, m: 4 * n });
+      }
     if (this.binsSel) for (const o of this.binsSel.options) o.textContent = t("{n} bins", { n: Number(o.value) });
   }
 
@@ -103,11 +109,12 @@ export class Controls implements View {
     filter.onchange = () => void this.apply(Number(filter.value) < 0 ? "FILTER AUTO" : `FILTER ${filter.value}`);
     this.ctl("Analog filter code (-1 = PHY auto; 60 ≈ 13 MHz, 0 ≈ 69 MHz)", filter);
     this.syncs.push((st) => (filter.value = String(st.filter)));
-    // FFT size; the device captures 4 FFTs' worth of samples and averages them (Welch), as in RotorHazard mode.
+    // FFT size; the device captures 4 FFTs' worth of samples and averages them (Welch), as in lap timer mode.
     const fftSel = el("select") as HTMLSelectElement;
-    const fftOption = (v: number) => new Option(`${v}-pt FFT (${4 * v} samples)`, String(v));
+    const fftOption = (v: number) => new Option(t("{n}-pt FFT ({m} samples)", { n: v, m: 4 * v }), String(v));
     for (const v of [64, 128, 256, 512, 1024]) fftSel.append(fftOption(v));
     fftSel.onchange = () => void this.apply(`FFT ${fftSel.value}`);
+    this.fftSel = fftSel;
     this.ctl("FFT size (finer bins with larger FFTs, more updates per second with smaller ones)", fftSel);
     this.syncs.push((st) => {
       if (![...fftSel.options].some((o) => o.value === String(st.nfft))) fftSel.append(fftOption(st.nfft));
