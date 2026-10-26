@@ -10,6 +10,7 @@ import android.app.Dialog
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -28,6 +29,7 @@ class ChannelPlanSheet(private val activity: Activity, private val onPick: (List
     private var dialog: Dialog? = null
 
     fun show(current: List<String>) {
+        summary?.removeCallbacks(restore)
         selected.clear()
         selected += current.filter { Bands.mhz(it) != null }
         chips.clear()
@@ -62,17 +64,29 @@ class ChannelPlanSheet(private val activity: Activity, private val onPick: (List
     }
 
     fun dismiss() {
+        summary?.removeCallbacks(restore)
         dialog?.dismiss()
         dialog = null
     }
 
-    /** One band: its name takes the whole band, the eight numbers join or leave the plan. */
+    /** One band: its name switches the whole band; the eight numbers join or leave the plan. */
     private fun bandRow(band: Band): LinearLayout {
         val cells = band.mhz.indices.map { n ->
             val name = "${band.letter}${n + 1}"
             button((n + 1).toString()) { toggle(name) }.also { chips += name to it }
         }
-        return row(listOf(button("${band.letter} ${band.name}") { takeAll(band.letter) }) + cells)
+        val strip = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row(cells))
+        }
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(button("${band.letter} ${band.name}") { takeAll(band.letter) })
+            addView(strip, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = pad(3f)
+            })
+        }
     }
 
     /** Replacing the selection is the point: eight channels of one band fills the plan. */
@@ -83,11 +97,27 @@ class ChannelPlanSheet(private val activity: Activity, private val onPick: (List
     }
 
     private fun toggle(name: String) {
-        if (!selected.remove(name) && selected.size < MAX_CHANNELS) selected += name
-        sync()
+        if (selected.remove(name)) sync()
+        else if (selected.size < MAX_CHANNELS) {
+            selected += name
+            sync()
+        } else flash(activity.getString(R.string.plan_full))
     }
 
+    /** Say why nothing happened where the counter sits, then restore it. */
+    private fun flash(msg: String) {
+        val s = summary ?: return
+        s.removeCallbacks(restore)
+        s.text = msg
+        s.setTextColor(theme.warning)
+        s.postDelayed(restore, 1800)
+    }
+
+    private val restore = Runnable { sync() }
+
     private fun sync() {
+        summary?.removeCallbacks(restore)
+        summary?.setTextColor(theme.ink)
         chips.forEach { (name, chip) ->
             chip.setTextColor(if (selected.contains(name)) theme.accent else theme.muted)
         }

@@ -59,8 +59,9 @@
     <string name="set_none">None</string>
 
     <string name="plan_title">Channels to scan</string>
-    <string name="plan_hint">Up to 8 channels. Tap a band name to take all eight of its channels.</string>
+    <string name="plan_hint">Up to 8 channels. Tap a band name to switch to that band, or tap channels in several bands to mix them.</string>
     <string name="plan_count">%1$d of %2$d selected · %3$s</string>
+    <string name="plan_full">The plan is full. Clear a channel first.</string>
     <string name="plan_clear">Clear</string>
 
     <string name="set_mode">LO plan</string>

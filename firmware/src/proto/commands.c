@@ -469,10 +469,6 @@ static void handle(char *line, link_sink_t sink) {
         c.settle_us = a;
         scanner_set_config(&c);
         reply_text("OK\n");
-    } else if (sscanf(line, "CONJ %" SCNu32 " %c", &a, &extra) == 1 && a <= 1) {
-        c.conjugate = a;
-        scanner_set_config(&c);
-        reply_text("OK\n");
     } else if (sscanf(line, "IQCORR %" SCNu32 " %c", &a, &extra) == 1 && a <= 1) {
         c.iq_corr = a;
         scanner_set_config(&c);
