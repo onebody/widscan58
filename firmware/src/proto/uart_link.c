@@ -11,7 +11,9 @@
 #define UART_LINK_BAUD 115200
 #define UART_LINK_RX_BYTES 4096
 #define UART_LINK_TX_BYTES 4096
-#define UART_LINK_QUEUE_BYTES 4096
+/* A NOSPLIT ring's largest item is half its size (minus a header), so 8 KB
+ * holds a whole 3 KB reply (REPLY_BYTES in commands.c). */
+#define UART_LINK_QUEUE_BYTES 8192
 
 #if RX_TARGET_C5
 static bool installed;
