@@ -126,15 +126,18 @@ void rh_set_filter(lap_filter_t f) {
 
 lap_filter_t rh_get_filter(void) { return (lap_filter_t)seat[0].lap.filter; }
 
-IRAM_ATTR void rh_feed(unsigned seat_idx, int64_t t_us, uint8_t level) {
-    if (seat_idx >= RH_SEATS) return;
+IRAM_ATTR bool rh_feed(unsigned seat_idx, int64_t t_us, uint8_t level) {
+    if (seat_idx >= RH_SEATS) return false;
     if (level < 1) level = 1;
     if (level > 254) level = 254;
     portENTER_CRITICAL(&mux);
     int64_t prev = seat[seat_idx].last_us;
     seat[seat_idx].last_us = t_us;
     lap_feed(&seat[seat_idx].lap, (uint32_t)(t_us / 1000), level, prev ? (uint32_t)(t_us - prev) : 0);
+    /* The raw level answers at once; the crossing covers the hysteresis band. */
+    const bool signal = seat[seat_idx].lap.crossing || level >= seat[seat_idx].lap.exit_at;
     portEXIT_CRITICAL(&mux);
+    return signal;
 }
 
 /* ---- Replies ---- */

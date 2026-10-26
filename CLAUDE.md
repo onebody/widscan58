@@ -112,6 +112,21 @@ lower half (`radio_c5.c`, `RADIO_RAM`). PlatformIO does not regenerate its
 `sections.ld` when a `.lf` file changes: delete
 `.pio/build/esp32c5/sections.ld` after editing one.
 
+**Status LED (C5-Zero):** GP27 drives the board's WS2812 through RMT
+(`src/status_led.c`): dark at boot; on the first signal after two seconds of
+silence, solid green for a second, then 100 ms on / 300 ms off while the signal
+stays; dark again two seconds after the last one. "Signal" is `CHF_SIGNAL` in
+monitor mode and a RotorHazard seat at or above its exit level in RH mode (its
+raw level has no floor to compare). The poll runs on the existing esp_timer
+task every 50 ms; the 24-symbol frame is heap-allocated and only retransmitted
+when the on/off state flips, so a scan-loop hop costs one store. While dark
+the pin is high-Z with a pull-down (not the RMT idle low), which also makes
+the XIAO's plain active-low LED on the same pin follow the pattern. The RMT
+encoder and ISR stay out of IRAM (`sdkconfig.defaults`): placing them there
+costs ~3 KB and the ISR cannot run with the flash cache off anyway (flash
+writes disable interrupts). The driver still adds ~0.9 KB of static RAM below
+the dump bank; the C5 link keeps ~1 KB of headroom.
+
 **ADC rate on the C5:** the PHY runs 5 GHz at ADC rate 0 with no decimation
 filter, and only above 5830 MHz at rate 1 with RX filter mode 8
 (`phy_rfpll_set_adc_rate`). `adc_path_set` (`radio_c5.c`) puts every LO on
@@ -236,7 +251,7 @@ Send these with `tools/widscan58cli.py cmd …` or the UI's Protocol console.
 | `CONFIG RESET` | RotorHazard mode only: erase the saved RotorHazard mode defaults and apply the built-in ones |
 | `CONFIG?` | `STATUS?` under another name (`CONFIG {…}`), allowed in RotorHazard mode. In RotorHazard mode only `PROTOCOL…`, `INFO`, `CONFIG?`, `CONFIG SAVE`, `CONFIG RESET`, `METRICS RSSI\|SNR\|?`, `GAIN …`, `FFT`, `FILTER`, `IQCORR`, `MODE GROUP\|SINGLE`, `LEVELFILTER …`, `RECAL`, `THROTTLE`, `PHYIDLE…` and `GPIO…` work; the rest answer `ERR rh_mode` |
 | `LEVELFILTER MEDIAN\|EMA`, `LEVELFILTER?` | RotorHazard mode only (`ERR rh_only` otherwise; the query works in both): the seats' level filter. `MEDIAN` (default): the 255 ms running median, as RotorHazard's nodes. `EMA`: a median of 3, then an exponential average with a 2.72 ms time constant at any update rate (its weight comes from each update's interval), as FPVGateC5MK (alpha 0.3 at ~1030 /s). A change resets the seats' levels. Reported as `level_filter` in `STATUS?`/`CONFIG?` |
-| `GPIO <n> NONE\|LOW\|HIGH`, `GPIO SAVE`, `GPIO?` | GPIO outputs set at boot, e.g. an antenna switch (Waveshare ESP32-C5-Zero: GPIO26). A change drives the pin at once (`NONE`: back to the reset state, pull-up on); `GPIO SAVE` makes the settings in effect the boot ones (NVS, base 3 per GPIO number, 40 per `u64` key `gpio0`, `gpio1`; `src/gpio_out.c`), applied right after `nvs_flash_init`. `GPIO?` answers `GPIO {"count":N,"active":"…","saved":"…"}`, one character per GPIO: `-` unused, `L`, `H`, `x` not available (USB, the C5's UART pins 11/12, and the flash pins IDF reserves). Works in both modes |
+| `GPIO <n> NONE\|LOW\|HIGH`, `GPIO SAVE`, `GPIO?` | GPIO outputs set at boot, e.g. an antenna switch (Waveshare ESP32-C5-Zero: GPIO26). A change drives the pin at once (`NONE`: back to the reset state, pull-up on); `GPIO SAVE` makes the settings in effect the boot ones (NVS, base 3 per GPIO number, 40 per `u64` key `gpio0`, `gpio1`; `src/gpio_out.c`), applied right after `nvs_flash_init`. `GPIO?` answers `GPIO {"count":N,"active":"…","saved":"…"}`, one character per GPIO: `-` unused, `L`, `H`, `x` not available (USB, the C5's UART pins 11/12, the WS2812 on GP27, and the flash pins IDF reserves). Works in both modes |
 | `REBOOT` | Restart (USB stays connected). The board comes back silent in RotorHazard mode; the web UI notices the missing telemetry and switches it back to monitor mode |
 
 ## RotorHazard mode

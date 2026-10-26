@@ -20,15 +20,18 @@
 #define NWORDS ((SOC_GPIO_PIN_COUNT + DIGITS_PER_WORD - 1) / DIGITS_PER_WORD)
 
 /* USB Serial/JTAG is the host link and GP11/GP12 are the RotorHazard UART
- * (uart_link.c); the flash pins (and PSRAM's, when it is on) are reserved by
- * IDF at startup (esp_mspi_pin_reserve). */
+ * (uart_link.c); GP27 is the C5-Zero's WS2812 (status_led.c); the flash pins
+ * (and PSRAM's, when it is on) are reserved by IDF at startup
+ * (esp_mspi_pin_reserve). */
 #if CONFIG_IDF_TARGET_ESP32C5
 #define USB_PINS (BIT64(13) | BIT64(14))
 #define UART_PINS (BIT64(11) | BIT64(12))
+#define LED_PINS BIT64(27)
 #elif CONFIG_IDF_TARGET_ESP32S3
 #include "soc/usb_pins.h"
 #define USB_PINS (BIT64(USBPHY_DM_NUM) | BIT64(USBPHY_DP_NUM))
 #define UART_PINS 0
+#define LED_PINS 0
 #endif
 
 /* Bit n: GPIO n in use, and if so high. Masks, not per-pin bytes: the C5's
@@ -42,7 +45,7 @@ unsigned gpio_out_count(void) { return SOC_GPIO_PIN_COUNT; }
 
 bool gpio_out_allowed(unsigned n) {
     return n < SOC_GPIO_PIN_COUNT && GPIO_IS_VALID_OUTPUT_GPIO(n) && !(USB_PINS & BIT64(n)) &&
-           !(UART_PINS & BIT64(n)) && !esp_gpio_is_reserved(BIT64(n));
+           !(UART_PINS & BIT64(n)) && !(LED_PINS & BIT64(n)) && !esp_gpio_is_reserved(BIT64(n));
 }
 
 static gpio_out_t pin_get(const pins_t *p, unsigned n) {

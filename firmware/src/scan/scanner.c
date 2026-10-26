@@ -16,6 +16,7 @@
 #include "fft_eval.h"
 #include "rh.h"
 #include "scanner.h"
+#include "status_led.h"
 
 #define FLOOR_PERCENTILE 0.2f
 #define TELEMETRY_US 250000
@@ -303,6 +304,7 @@ static void do_levels(metrics_input_t *in, const psd_result_t *psd, const plan_h
     const int32_t spec_bin_q8 = (int32_t)lrintf((2.0f * scale_db + 255.0f) * 256.0f);
     const uint32_t floor_raw = snr ? metrics_floor_raw(in, FLOOR_PERCENTILE, sp->scratch) : 0;
     frame_level_t out[PLAN_MAX_PER_LO];
+    bool heard = false;
     for (unsigned j = 0; j < hop->nch; j++) {
         metrics_level_t m;
         metrics_level(in, floor_raw, hop->offset_hz[j], &m);
@@ -312,8 +314,12 @@ static void do_levels(metrics_input_t *in, const psd_result_t *psd, const plan_h
             if (llabs(d) <= c->rssi_hz) m.flags |= CHF_SPUR;
         }
         out[j] = (frame_level_t){.id = hop->ch[j], .flags = m.flags, .rssi = m.rssi, .snr = m.snr};
-        if (c->rh) rh_feed(hop->ch[j], cap_mid, snr ? m.snr : m.rssi);
+        heard |= (m.flags & CHF_SIGNAL) != 0;
+        /* RotorHazard mode: the server's own enter/exit levels say what a
+         * signal is (metrics RSSI has no floor to compare against). */
+        if (c->rh) heard |= rh_feed(hop->ch[j], cap_mid, snr ? m.snr : m.rssi);
     }
+    if (heard) status_led_signal();
     int64_t tm1 = esp_timer_get_time();
     int64_t t3 = finish_hop(psd, hop, t2, tm0, tm1);
     unsigned gain_index;
@@ -401,6 +407,7 @@ static IRAM_ATTR void do_hop(void) {
     metrics_floor_t fl;
     metrics_floor(&in, FLOOR_PERCENTILE, sp->scratch, &fl);
     frame_channel_t out[PLAN_MAX_PER_LO];
+    bool heard = false;
     for (unsigned j = 0; j < hop->nch; j++) {
         channel_state_t *st = &sp->ch[hop->ch[j]];
         metrics_channel_t m;
@@ -410,6 +417,7 @@ static IRAM_ATTR void do_hop(void) {
             float d = ((float)c->spurs_khz[k] - (float)hop->lo_khz) * 1000.0f - hop->offset_hz[j];
             if (fabsf(d) <= c->search_hz) m.flags |= CHF_SPUR;
         }
+        if (m.flags & CHF_SIGNAL) heard = true;
         float lin = m.rssi;
         if (!st->init) { st->rssi_ema = lin; st->init = true; }
         else st->rssi_ema += c->ema_alpha * (lin - st->rssi_ema);
@@ -430,6 +438,7 @@ static IRAM_ATTR void do_hop(void) {
         };
     }
     float dc = (psd.dc_i * psd.dc_i + psd.dc_q * psd.dc_q) / (RADIO_FULL_SCALE * RADIO_FULL_SCALE);
+    if (heard) status_led_signal();
     int64_t tm1 = esp_timer_get_time();
     int64_t t3 = finish_hop(&psd, hop, t2, tm0, tm1);
     unsigned gain_index;

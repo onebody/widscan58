@@ -35,5 +35,6 @@ void rh_reset_levels(void);
 /* Every seat's level filter (lap.h); a change resets the seats' levels. */
 void rh_set_filter(lap_filter_t f);
 lap_filter_t rh_get_filter(void);
-/* One level update for a seat (scanner task). */
-void rh_feed(unsigned seat, int64_t t_us, uint8_t level);
+/* One level update for a seat (scanner task). True while the seat's level is
+ * at or above its exit threshold: a signal is on that channel. */
+bool rh_feed(unsigned seat, int64_t t_us, uint8_t level);
