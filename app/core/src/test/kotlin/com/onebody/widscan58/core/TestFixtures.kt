@@ -30,10 +30,19 @@ internal fun spectrumOf(
 internal fun levelOf(id: Int, flags: Int = 0, rssiDb: Double, snrDb: Double? = null) =
     intArrayOf(id, flags, levelCode(rssiDb), if (snrDb == null) 0 else (snrDb * 4).roundToInt())
 
-internal fun levelsOf(loKhz: Long, mode: Int, perBinFloor: Int = 0, vararg levels: IntArray): ByteArray {
+internal fun levelsOf(
+    loKhz: Long,
+    mode: Int,
+    perBinFloor: Int = 0,
+    vararg levels: IntArray,
+    tuneUs: Long = 100,
+    captureUs: Long = 200,
+    dspUs: Long = 50,
+): ByteArray {
     val p = ByteArray(32 + 4 * levels.size)
     val b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN)
     b.putInt(0, 7).putInt(4, 100).putInt(8, loKhz.toInt())
+    b.putInt(12, tuneUs.toInt()).putInt(16, captureUs.toInt()).putInt(20, dspUs.toInt())
     p[29] = mode.toByte()
     p[30] = perBinFloor.toByte()
     p[31] = levels.size.toByte()
@@ -58,15 +67,23 @@ internal class MetricChannel(
     val rssiEma: Double? = null,
     val floor: Double? = null,
     val snr: Double? = null,
+    val clearFloor: Double? = null,
     val peak: Double? = null,
     val centroidHz: Long? = null,
     val obwHz: LongRange? = null,
 )
 
-internal fun metricsOf(vararg channels: MetricChannel, loKhz: Long = 5_658_000): ByteArray {
+internal fun metricsOf(
+    vararg channels: MetricChannel,
+    loKhz: Long = 5_658_000,
+    tuneUs: Long = 100,
+    captureUs: Long = 200,
+    dspUs: Long = 50,
+): ByteArray {
     val p = ByteArray(34 + 26 * channels.size)
     val b = ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN)
     b.putInt(0, 3).putInt(4, 100).putInt(8, loKhz.toInt())
+    b.putInt(12, tuneUs.toInt()).putInt(16, captureUs.toInt()).putInt(20, dspUs.toInt())
     p[30] = 45 // gain
     p[31] = 0 // hop index
     p[32] = 1 // hops
@@ -79,9 +96,11 @@ internal fun metricsOf(vararg channels: MetricChannel, loKhz: Long = 5_658_000):
         p[o] = c.id.toByte()
         p[o + 1] = c.flags.toByte()
         i16(o + 2, c.rssi)
-        i16(o + 4, c.rssiEma)
+        // FULL metrics always smooths RSSI; an unmeasured clear floor is the wire's own sentinel.
+        i16(o + 4, c.rssiEma ?: c.rssi)
         i16(o + 6, c.floor)
         i16(o + 8, c.snr)
+        b.putShort(o + 10, (c.clearFloor?.let { (it * 100).roundToInt().toShort() } ?: Short.MIN_VALUE))
         i16(o + 12, c.peak)
         c.centroidHz?.let { b.putInt(o + 18, it.toInt()) }
         c.obwHz?.let { b.putShort(o + 22, (it.first / 1000).toShort()).putShort(o + 24, (it.last / 1000).toShort()) }
@@ -129,8 +148,8 @@ internal fun statusOf(vararg planLoKhz: Long, enabled: Int = 0xff) = Status(
     rssiHz = 5_000_000,
     searchHz = 12_000_000,
     dcGuard = 3,
-    ema = 8,
-    clearEma = 0,
+    ema = 0.008,
+    clearEma = 0.0,
     signalDb = -75.0,
     avgShift = 1,
     specEvery = 4,

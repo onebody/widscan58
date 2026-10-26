@@ -40,8 +40,13 @@ class ChannelTile(
     val snr: Double?,
     val floor: Double?,
     val clearFloor: Double?,
-    val centroidHz: Long?, // null unless the channel is occupied
+    val centroidHz: Long?, // null in a metrics mode that does not locate the signal
     val obwHz: Long?,
+    /** A located signal: centre and bandwidth mean something. The device keeps
+     *  measuring both for an idle channel, so the tile must not show their drift. */
+    val occupied: Boolean,
+    /** The metrics mode measures an EMA, and with it a clear floor; LEVELS frames do not. */
+    val smoothed: Boolean,
     val badges: List<TileBadge>,
     /** Last 10 s of smoothed RSSI, drawn between [sparkLo] and [sparkHi]. */
     val series: Series?,
@@ -79,8 +84,10 @@ fun channelTile(store: Store, id: Int, selected: Int): ChannelTile? {
         snr = m?.snr,
         floor = m?.floor,
         clearFloor = m?.clearFloor,
-        centroidHz = if (occupied) m!!.centroidOffHz else null,
-        obwHz = if (occupied) m!!.let { it.obwHiHz?.minus(it.obwLoHz ?: return@let null) } else null,
+        centroidHz = m?.centroidOffHz,
+        obwHz = m?.let { it.obwHiHz?.minus(it.obwLoHz ?: return@let null) },
+        occupied = occupied,
+        smoothed = m?.rssiEma != null,
         badges = m?.let { badgesFor(it.flags, stale, it.peak != null) } ?: emptyList(),
         series = series,
         sparkFloor = floor ?: DEFAULT_FLOOR_DB,

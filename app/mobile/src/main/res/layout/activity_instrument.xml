@@ -52,7 +52,7 @@
             android:id="@+id/tile0"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -60,7 +60,7 @@
             android:id="@+id/tile1"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -68,7 +68,7 @@
             android:id="@+id/tile2"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -76,7 +76,7 @@
             android:id="@+id/tile3"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -84,7 +84,7 @@
             android:id="@+id/tile4"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -92,7 +92,7 @@
             android:id="@+id/tile5"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -100,7 +100,7 @@
             android:id="@+id/tile6"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
 
@@ -108,7 +108,7 @@
             android:id="@+id/tile7"
             android:layout_width="0dp"
             android:layout_margin="2dp"
-            android:layout_height="118dp"
+            android:layout_height="162dp"
             android:layout_columnWeight="1"
             android:layout_gravity="fill_horizontal" />
     </GridLayout>

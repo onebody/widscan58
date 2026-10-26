@@ -32,6 +32,14 @@ adb install -r mobile/build/outputs/apk/debug/mobile-debug.apk
 然后插上板子，在弹出的 USB 访问授权里点允许。应用注册了 `USB_DEVICE_ATTACHED`
 过滤器，所以插上板子这一步本身就能把应用拉起来。
 
+## 文档
+
+- **图文教程在应用里**：`⋯ → 使用帮助`。它是打包进 APK 的本机页面
+  （`mobile/src/main/assets/help/`），不联网、也没有为它申请任何权限，板子没插也能看。
+  目前只有中文。
+- **操作手册**是 [`docs/MANUAL.zh-CN.md`](docs/MANUAL.zh-CN.md)：按功能逐项列控件取值
+  和它对应的固件命令，另有帧格式与 `.widscan58` / CSV 文件结构。同样只有中文。
+
 ## 屏幕上都有什么
 
 | 区域 | 内容 |

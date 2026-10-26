@@ -1,13 +1,21 @@
-// PROFILE and STATUS replies are JSON; this is the bridge to the pure-Kotlin model.
+// PROFILE, STATUS and GPIO replies are JSON; this is the bridge to the pure-Kotlin model.
 // GPL-3.0-or-later.
 package com.onebody.widscan58
 
+import com.onebody.widscan58.core.DeviceCommands
+import com.onebody.widscan58.core.GainMode
+import com.onebody.widscan58.core.GpioPin
+import com.onebody.widscan58.core.LoPlan
 import com.onebody.widscan58.core.MetricsMode
 import com.onebody.widscan58.core.PlanHop
 import com.onebody.widscan58.core.Profile
 import com.onebody.widscan58.core.ProfileChannel
 import com.onebody.widscan58.core.ReplyCodec
+import com.onebody.widscan58.core.RhConfig
+import com.onebody.widscan58.core.RhLapFilter
+import com.onebody.widscan58.core.RhMetric
 import com.onebody.widscan58.core.Status
+import com.onebody.widscan58.core.parseGpio
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -71,8 +79,8 @@ class JsonReplies : ReplyCodec {
             rssiHz = o.optLong("rssi_hz"),
             searchHz = o.optLong("search_hz"),
             dcGuard = o.optInt("dc_guard"),
-            ema = o.optInt("ema"),
-            clearEma = o.optInt("clear_ema"),
+            ema = o.optDouble("ema", 0.0),
+            clearEma = o.optDouble("clear_ema", 0.0),
             signalDb = o.optDouble("signal_db", 0.0),
             avgShift = o.optInt("avg_shift"),
             specEvery = o.optInt("spec_every"),
@@ -85,6 +93,30 @@ class JsonReplies : ReplyCodec {
                 val off = h.ints("offset_hz") ?: JSONArray()
                 PlanHop(h.optLong("lo_khz"), IntArray(ch.length()) { k -> ch.getInt(k) }, off.longs())
             },
+        )
+    }.getOrNull()
+
+    /** The pin settings are one character each, so the strict shape check belongs to :core. */
+    override fun gpio(json: String): List<GpioPin>? = runCatching {
+        val o = JSONObject(json)
+        parseGpio(o.getInt("count"), o.getString("active"), o.getString("saved"))
+    }.getOrNull()
+
+    /**
+     * CONFIG?'s body: the same JSON as STATUS, since one reply serves both. Firmware before
+     * LEVELFILTER has no `level_filter`, and that node only ever ran the median. A body whose
+     * metric is neither RSSI nor SNR is monitor mode's, not a RotorHazard configuration.
+     */
+    fun rhConfig(json: String): RhConfig? = runCatching {
+        val o = JSONObject(json)
+        RhConfig(
+            gain = o.optInt("gain"),
+            gainMax = o.optInt("gain_max", DeviceCommands.GAIN_FALLBACK_MAX),
+            gainMode = if (o.optString("gain_mode", "MANUAL") == "HARDWARE") GainMode.HARDWARE else GainMode.MANUAL,
+            nfft = o.optInt("nfft"),
+            mode = if (o.optString("mode", "GROUP") == "SINGLE") LoPlan.SINGLE else LoPlan.GROUP,
+            metric = RhMetric.of(o.optString("metrics")) ?: error("metrics ${o.optString("metrics")}"),
+            levelFilter = RhLapFilter.entries.firstOrNull { it.name == o.optString("level_filter") } ?: RhLapFilter.MEDIAN,
         )
     }.getOrNull()
 }

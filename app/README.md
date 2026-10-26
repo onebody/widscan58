@@ -37,6 +37,15 @@ Android SDK (`sdk.dir=…`). `:core:test` is pure JVM and needs no device.
 Then connect the board and grant the USB permission dialog. The app is in the
 `USB_DEVICE_ATTACHED` filter, so plugging the board in can open it by itself.
 
+## Documentation
+
+- **The illustrated tutorial ships inside the app**: `⋯ → Help`. It is a local page
+  under `mobile/src/main/assets/help/` — no network access, no permission for it,
+  and it works with the board unplugged. Chinese only for now.
+- **The reference manual** is [`docs/MANUAL.zh-CN.md`](docs/MANUAL.zh-CN.md): every
+  control with the values it accepts and the firmware command behind it, plus the
+  wire frame format and the `.widscan58` / CSV file layouts. Also Chinese only.
+
 ## What the screen shows
 
 | Part | Content |

@@ -1,5 +1,6 @@
-// One channel's readout: level, bar against its noise floor, SNR, badges and the
-// 10 s sparkline. Mirrors the tile in web/src/views/channelGrid.ts. GPL-3.0-or-later.
+// One channel's readout: level, bar against its noise floor, the web's five metrics
+// rows, badges and the 10 s sparkline. Mirrors the tile in web/src/views/channelGrid.ts.
+// GPL-3.0-or-later.
 package com.onebody.widscan58.view
 
 import android.content.Context
@@ -12,6 +13,7 @@ import android.view.View
 import com.onebody.widscan58.R
 import com.onebody.widscan58.core.BadgeKind
 import com.onebody.widscan58.core.ChannelTile
+import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 
@@ -111,14 +113,16 @@ class ChannelTileView @JvmOverloads constructor(context: Context, attrs: Attribu
             )
         }
 
-        // Four columns leave ~72 dp of text width, so SNR and floor get their own line
-        // instead of colliding on a narrow phone.
+        // One readout per line, as on the web: a 98 dp tile cannot fit the web's second
+        // column at a legible size. A row the metrics mode does not measure is left out
+        // entirely; a dash is a measurement that does not apply to this channel.
         y += theme.dp(16f)
         kv.color = theme.muted
         kv.alpha = alpha
-        canvas.drawText(context.getString(R.string.tile_snr, fmtDb(t.snr)), pad, y, kv)
-        y += theme.dp(TEXT_LINE_DP)
-        canvas.drawText(context.getString(R.string.tile_floor, fmtDb(t.floor)), pad, y, kv)
+        for (row in readouts(context, t)) {
+            canvas.drawText(row, pad, y, kv)
+            y += theme.dp(TEXT_LINE_DP)
+        }
 
         if (t.badges.isNotEmpty()) {
             y += theme.dp(TEXT_LINE_DP)
@@ -139,6 +143,17 @@ class ChannelTileView @JvmOverloads constructor(context: Context, attrs: Attribu
         }
 
         drawSpark(canvas, t, pad, right, h - pad - theme.dp(SPARK_H_DP), h - pad, color, alpha)
+    }
+
+    /** The web's tile rows, in the web's order. */
+    private fun readouts(context: Context, t: ChannelTile): List<String> {
+        val rows = ArrayList<String>(5)
+        t.snr?.let { rows += context.getString(R.string.tile_snr, String.format(Locale.US, "%.1f dB", it)) }
+        t.floor?.let { rows += context.getString(R.string.tile_floor, fmtDb(it)) }
+        if (t.smoothed) rows += context.getString(R.string.tile_clear, fmtDb(t.clearFloor))
+        t.centroidHz?.let { rows += context.getString(R.string.tile_centre, if (t.occupied) fmtOffsetKHz(it) else DASH) }
+        t.obwHz?.let { rows += context.getString(R.string.tile_obw, if (t.occupied) fmtBwMHz(it) else DASH) }
+        return rows
     }
 
     /** Last 10 s of smoothed RSSI against the channel's floor. */
@@ -184,9 +199,10 @@ class ChannelTileView @JvmOverloads constructor(context: Context, attrs: Attribu
     }
 
     companion object {
+        private const val DASH = "—"
         private const val SPARK_WINDOW_S = 10.0
         private const val SPARK_H_DP = 18f
-        private const val TEXT_LINE_DP = 13f
+        private const val TEXT_LINE_DP = 12f
 
         /** The engine says what a badge means; which words to show is the app's call. */
         private val BADGE_LABELS = mapOf(

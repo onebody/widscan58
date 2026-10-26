@@ -71,7 +71,7 @@ class ChannelTileTest {
     }
 
     @Test
-    fun `centre and occupied bandwidth only show for an occupied channel`() {
+    fun `centre and bandwidth keep their measurements and only occupancy says whether to show them`() {
         store.setProfile(profileOf())
         store.ingest(
             frame(
@@ -85,9 +85,12 @@ class ChannelTileTest {
             ),
         )
         val occupied = channelTile(store, 0, -1)!!
-        assertEquals(150_000L, occupied.centroidHz)
-        assertEquals(12_000_000L, occupied.obwHz)
+        assertTrue(occupied.occupied)
+        assertTrue(occupied.smoothed)
+        assertEquals(150_000L, occupied.centroidHz!!)
+        assertEquals(12_000_000L, occupied.obwHz!!)
 
+        // The device measures an unlocated channel too; the app shows an em dash.
         store.ingest(
             frame(
                 FrameType.METRICS,
@@ -100,8 +103,30 @@ class ChannelTileTest {
             ),
         )
         val unlocated = channelTile(store, 0, -1)!!
-        assertNull(unlocated.centroidHz)
-        assertNull(unlocated.obwHz)
+        assertTrue(unlocated.occupied.not())
+        assertEquals(150_000L, unlocated.centroidHz!!)
+        assertEquals(12_000_000L, unlocated.obwHz!!)
+
+        // A LEVELS frame carries neither, so there is nothing to show at all.
+        levels(1, levelOf(id = 0, rssiDb = -50.0, flags = ChannelFlag.SIGNAL))
+        val unmeasured = channelTile(store, 0, -1)!!
+        assertTrue(unmeasured.occupied)
+        assertTrue(unmeasured.smoothed.not())
+        assertNull(unmeasured.centroidHz)
+        assertNull(unmeasured.obwHz)
+        assertNull(unmeasured.clearFloor)
+    }
+
+    @Test
+    fun `a clear floor is missing until the channel has been quiet`() {
+        store.setProfile(profileOf())
+        store.ingest(frame(FrameType.METRICS, metricsOf(MetricChannel(id = 0, rssi = -50.0))))
+        val busy = channelTile(store, 0, -1)!!
+        assertTrue(busy.smoothed) // the mode measures it; this channel has simply never been clear
+        assertNull(busy.clearFloor)
+
+        store.ingest(frame(FrameType.METRICS, metricsOf(MetricChannel(id = 0, rssi = -50.0, clearFloor = -88.5))))
+        assertEquals(-88.5, channelTile(store, 0, -1)!!.clearFloor!!, 1e-9)
     }
 
     @Test

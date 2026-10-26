@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Widscan58 手机应用使用教程</title>
+<style>
+:root{
+  /* The same dark ramp the app paints with (res/values/colors.xml), so the page
+     does not look like a different product inside the same window. */
+  --bg:#0d0d0d; --surface:#1a1a19; --surface2:#232321; --line:#2c2c2a;
+  --fg:#ffffff; --muted:#898781; --accent:#6da7ec; --warn:#fab219; --bad:#ef6b62; --good:#3ecf6e;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font:16px/1.75 system-ui,-apple-system,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+  padding:0 0 4rem;
+}
+header{padding:1.4rem 1rem 1rem; border-bottom:1px solid var(--line); background:var(--surface)}
+h1{margin:0 0 .3rem; font-size:1.45rem; line-height:1.35}
+.sub{margin:0; color:var(--muted); font-size:.9rem}
+.lang{margin:.6rem 0 0; font-size:.82rem; color:var(--muted); border-left:3px solid var(--line); padding-left:.6rem}
+nav{position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line);
+    display:flex; gap:.4rem; overflow-x:auto; padding:.5rem .75rem; -webkit-overflow-scrolling:touch}
+nav a{flex:0 0 auto; font-size:.8rem; color:var(--muted); text-decoration:none;
+      border:1px solid var(--line); border-radius:999px; padding:.15rem .6rem; white-space:nowrap}
+nav a:active{color:var(--accent); border-color:var(--accent)}
+main{max-width:34rem; margin:0 auto; padding:0 1rem}
+section{padding-top:1.6rem; scroll-margin-top:3.2rem}
+h2{font-size:1.18rem; margin:0 0 .6rem; padding-bottom:.35rem; border-bottom:1px solid var(--line)}
+h2 .n{color:var(--accent); font-variant-numeric:tabular-nums; margin-right:.35rem}
+h3{font-size:1rem; margin:1.3rem 0 .4rem; color:var(--fg)}
+p{margin:.55rem 0}
+ul,ol{margin:.5rem 0; padding-left:1.4rem}
+li{margin:.25rem 0}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.85em;
+     background:var(--surface2); border:1px solid var(--line); border-radius:4px; padding:.05em .35em}
+kbd{font-family:inherit; font-size:.85em; background:var(--surface2); border:1px solid var(--line);
+    border-bottom-width:2px; border-radius:4px; padding:.05em .4em}
+figure{margin:1rem 0}
+figure img{display:block; width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:#000}
+figcaption{font-size:.82rem; color:var(--muted); margin-top:.35rem}
+table{width:100%; border-collapse:collapse; margin:.8rem 0; font-size:.9rem}
+th,td{border:1px solid var(--line); padding:.4rem .5rem; text-align:left; vertical-align:top;
+      overflow-wrap:anywhere}
+th{background:var(--surface2); font-weight:600}
+td.k{color:var(--fg); font-weight:600}
+.note,.tip,.caution{border-radius:8px; padding:.6rem .8rem; margin:.9rem 0; font-size:.92rem; border:1px solid var(--line)}
+.note{background:var(--surface)}
+.tip{background:rgba(62,207,110,.08); border-color:rgba(62,207,110,.32)}
+.caution{background:rgba(250,178,25,.08); border-color:rgba(250,178,25,.32)}
+.note b,.tip b,.caution b{display:block; margin-bottom:.15rem}
+.badge{display:inline-block; font-size:.78rem; line-height:1.5; padding:0 .45em; border-radius:4px;
+       border:1px solid currentColor; margin-right:.3em; white-space:nowrap}
+.b-good{color:var(--good)} .b-warn{color:var(--warn)} .b-bad{color:var(--bad)} .b-info{color:var(--accent)}
+.pill{display:inline-block; font-size:.85rem; color:var(--accent); border:1px solid var(--line);
+      border-radius:6px; padding:0 .4em; margin:0 .15em}
+footer{max-width:34rem; margin:2.5rem auto 0; padding:1rem; border-top:1px solid var(--line);
+       color:var(--muted); font-size:.8rem}
+#lightbox{position:fixed; inset:0; z-index:50; background:#000; display:none;
+          overflow:auto; -webkit-overflow-scrolling:touch}
+#lightbox.on{display:block}
+#lightbox img{display:block; width:100%; max-width:1080px; margin:0 auto; padding:env(safe-area-inset-top) 0 2rem}
+#lightbox .hint{position:sticky; top:0; margin:0; text-align:center; color:var(--muted);
+                font-size:.8rem; background:#000; padding:.3rem}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Widscan58 手机应用使用教程</h1>
+  <p class="sub">把 ESP32-C5 的 5.8&nbsp;GHz 频段扫描仪接到手机上：接线、读图、每个视图怎么用、出问题怎么查。</p>
+  <p class="lang">本教程只提供中文——界面语言可以在「⋯ → 常规设置」里换成 English，这一页不行。截图取自模拟器（内置的模拟设备数据），真机上的数值会不同，但版式与控件一致。</p>
+</header>
+
+<nav>
+  <a href="#s1">接线</a><a href="#s2">首次连接</a><a href="#s3">主界面</a><a href="#s4">频道细节</a>
+  <a href="#s5">参数</a><a href="#s6">频道计划</a><a href="#s7">⋯ 菜单</a><a href="#s8">RSSI 历史</a>
+  <a href="#s9">遥测</a><a href="#s10">控制台</a><a href="#s11">GPIO</a><a href="#s12">录制导出</a>
+  <a href="#s13">计圈</a><a href="#s14">功率计</a><a href="#s15">原始 I/Q</a><a href="#s16">故障排查</a>
+  <a href="#s17">术语表</a>
+</nav>
+
+<main>
+
+<!-- ============================================================ -->
+<section id="s1">
+<h2><span class="n">1</span>接线与准备</h2>
+<p>这套应用不做任何计算上的“补救”，它只是把板卡通过 USB 发来的原始帧画成图。所以准备工作只有一件事：<b>让手机稳定地读到板卡的串口</b>。</p>
+<h3>你需要</h3>
+<ul>
+  <li>一块已刷好 Widscan58 固件的 ESP32-C5 板卡（原生 USB，VID <code>0x303A</code> / PID <code>0x1001</code>）。</li>
+  <li>支持 USB Host（OTG）的手机，和一根<b>能传数据</b>的 USB-C 线。很多短线只有电源线芯，插上后手机完全不会弹出设备。</li>
+  <li>不需要充电、不需要网络。应用<b>没有申请任何权限</b>，包括网络权限。</li>
+</ul>
+<h3>接法</h3>
+<ol>
+  <li>板卡 USB-C 口 → 数据线 → 手机 USB-C 口。板卡由手机供电（约 500&nbsp;mA 上限），不用另外接电源。</li>
+  <li>如果手机只有 USB-C 转 USB-A 的 OTG 转接头，就把板卡的 A 口线插上去；注意这种转接头通常不能同时供电，长时间扫描请留意手机电量。</li>
+  <li>打开应用。应用会自己找板卡，不需要点“连接”按钮。</li>
+</ol>
+<div class="tip"><b>想先熟悉界面再上板？</b>
+应用内置了一个模拟设备：用 adb 启动 <code>am start -n com.onebody.widscan58/.Widscan58Activity --ez sim true</code>，
+就能在没有硬件的情况下看到完整的 8 信道扫描画面（本教程的截图就是这么来的）。
+把 <code>sim</code> 换成 <code>rh true</code> 则直接进入计圈模式。这个入口只用于开发调试，普通使用不需要。</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s2">
+<h2><span class="n">2</span>首次连接</h2>
+<p>没插板卡时，界面是干净的空态：状态行写着「请用 USB-C 连接 Widscan58 板卡。」，中间是「等待频谱数据…」。这时底部按钮看起来仍是亮的，但<b>点「参数」「开始」不会有反应</b>——它们被禁用了，而这个主题下禁用态几乎不变灰，很容易误以为卡住了。</p>
+<figure><img src="img/01-idle.webp" alt="未连接板卡时的空界面" loading="lazy">
+<figcaption>图 2-1　未连接：状态行提示接线，画面不画任何东西。</figcaption></figure>
+<h3>插上之后</h3>
+<ol>
+  <li>系统弹出「允许 Widscan58 访问 USB 设备？」。勾选「每次连接此设备时都允许」再点确定，之后每次插板就不用再点一次。</li>
+  <li>应用打开串口，先发送 <code>PROTOCOL MONITOR</code>（把板卡从别的协议手里要回来），然后握手。</li>
+  <li>握手做这几件事：<code>SCAN STOP</code> → 把<b>应用自己存的设置写回板卡</b>（<code>CHANNELS …</code>、<code>MODE …</code>、<code>GAIN …</code>、<code>ENABLE …</code>）→ <code>SPEC 4 256 40000000 MAX</code> → 读 <code>PROFILE?</code> / <code>STATUS?</code> / <code>SPURS?</code> → <code>SCAN START</code> → <code>INFO</code>。</li>
+  <li>拿到状态帧后，状态行变成一串用「·」隔开的读数，控件全部解锁，并且<b>扫描已经自动开始了</b>。</li>
+</ol>
+<div class="caution"><b>连上的那一刻，应用会用自己的计划覆盖板卡当前设置。</b>设置存在手机本地，不是存在板卡里。
+所以同一块板先被手机连过，再拿去接网页版，看到的会是手机那套频道与增益；反过来网页版改的设置，手机重连时也会被手机本地设置盖掉。</div>
+<h3>状态行怎么读</h3>
+<p>连上以后的样子（模拟设备）：</p>
+<p><code>模拟设备 · c5-race · 1 圈/秒 · 8 次跳频 · 增益 45 · 链路 12%</code></p>
+<table>
+<tr><th>字段</th><th>含义</th></tr>
+<tr><td class="k">模拟设备 / 设备描述</td><td>真机连接时显示 USB 设备路径；回放文件时显示「回放 文件名」。</td></tr>
+<tr><td class="k">c5-race</td><td>板卡当前的频道计划名。没读到之前显示「连接中…」。</td></tr>
+<tr><td class="k">1 圈/秒</td><td>整张计划跑完一遍的速度，来自遥测帧。</td></tr>
+<tr><td class="k">8 次跳频</td><td>当前计划里的信道数（最多 8 个）。</td></tr>
+<tr><td class="k">增益 45</td><td>接收增益，是 PHY 表的<b>序号</b>不是 dB。</td></tr>
+<tr><td class="k">链路 12%</td><td>板卡发送队列的占用率。<b>越低越好</b>，0% 表示数据一产生就被手机取走了。持续升高说明 USB 带宽或手机侧来不及收，画面会开始掉帧。</td></tr>
+</table>
+<div class="caution"><b>「链路 0%」不是断链。</b>
+它表示队列排空得很快，是健康状态。真正断链时状态行会写成「已断开：device unplugged」，并且画面停止刷新。</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s3">
+<h2><span class="n">3</span>主界面：一张图看懂整个频段</h2>
+<figure><img src="img/02-main.webp" alt="主界面：全景频谱、瀑布图与频道卡片" loading="lazy">
+<figcaption>图 3-1　扫描中的主界面。从上到下：控件条 → 全景频谱 → 瀑布图 → 频道标尺 → 8 张频道卡片 → 开始/增益/峰值保持。</figcaption></figure>
+<h3>控件条</h3>
+<p><span class="pill">R</span><span class="pill">A</span><span class="pill">B</span><span class="pill">E</span><span class="pill">F</span><span class="pill">L</span>
+—— 六个 FPV 波段的快捷键，点一下就把整段 8 个频道写进板卡当扫描计划：</p>
+<table>
+<tr><th>键</th><th>波段</th><th>频率范围</th></tr>
+<tr><td class="k">R</td><td>Raceband</td><td>5658 – 5917 MHz</td></tr>
+<tr><td class="k">A</td><td>Boscam A</td><td>5725 – 5865 MHz</td></tr>
+<tr><td class="k">B</td><td>Boscam B</td><td>5733 – 5866 MHz</td></tr>
+<tr><td class="k">E</td><td>Boscam E</td><td>5645 – 5945 MHz</td></tr>
+<tr><td class="k">F</td><td>Fatshark</td><td>5740 – 5880 MHz</td></tr>
+<tr><td class="k">L</td><td>Low band</td><td>5362 – 5621 MHz</td></tr>
+</table>
+<p>高亮的那个字母是<b>当前计划第一个频道所属的波段</b>，不是“正在显示哪个波段”。混排计划（比如 R1、B4、L2）时按频率排序后取最靠前的。</p>
+<p><span class="pill">峰值</span> 打开/关闭峰值保持曲线（橙色那条），<span class="pill">均值</span> 打开/关闭滑动平均曲线。这两个只改显示，不发命令。<br>
+<span class="pill">参数</span> 打开扫描参数表（第 5 节）。<span class="pill">⋯</span> 其余全部视图。</p>
+<h3>全景频谱</h3>
+<ul>
+  <li>横轴是频率（MHz），纵轴是 <code>dBFS/格</code>——注意是<b>每格</b>，不是绝对值；绝对刻度由「参数 → 显示 dB 范围」决定。</li>
+  <li>彩色半透明竖条 = 计划里的 8 个信道；竖条上的虚线是信道边界。</li>
+  <li>白线 = 最新一次扫描；橙线 = 均值或峰值保持（取决于上面两个开关）。</li>
+  <li>底部一排 <code>V</code> 标记 = 该信道当前被启用。</li>
+  <li><b>在图上左右拖动 = 移动选中指针</b>，卡片会跟着换。</li>
+  <li>⋯ 菜单里的「自动缩放」按当前画面内容重算上下限，信号整体很弱或很强时先点它。</li>
+</ul>
+<h3>瀑布图</h3>
+<p>紧贴全景下方，<b>一行 = 一次跳频</b>，越往下越新。左侧两个数字是这列历史的起止秒数。看“某个信道是不是一阵一阵地出现”就看这里：一条竖直亮线 = 持续占用，散点 = 偶发。历史深度和「参数 → 显示频谱（每 N 跳…）」里的“每 N 跳”有关：N 越大，瀑布每行代表的跳数越多、时间跨度越长。</p>
+<h3>频道卡片</h3>
+<p>每个信道一张卡：色块 + 信道名 + 中心频率 + 大号电平 + 强度条 + 五行读数 + 徽标 + 右下角迷你趋势线。</p>
+<table>
+<tr><th>行</th><th>含义</th></tr>
+<tr><td class="k">−58.7 dBFS</td><td>该信道的当前电平（满量程分贝）。模拟量，不是天线口的 dBm。</td></tr>
+<tr><td class="k">信噪比 37.5 dB</td><td>电平减去底噪。判“有没有人在飞”主要看这个，绝对值低不代表没人。</td></tr>
+<tr><td class="k">底噪 −96.0</td><td>当前平滑后的本底。</td></tr>
+<tr><td class="k">最净底噪 −100.0</td><td>历史上见过的最干净本底，用来判断“这个信道以前空过吗”。</td></tr>
+<tr><td class="k">中心 −350 kHz</td><td>能量重心相对信道标称频率的偏移。</td></tr>
+<tr><td class="k">占用带宽 9.00 MHz</td><td>信号实际占掉的带宽；没有信号时显示「—」。</td></tr>
+</table>
+<h3>徽标</h3>
+<p>卡片左下角的彩色小标签，是固件判定的结论，不是应用自己猜的：</p>
+<table>
+<tr><th>徽标</th><th>意思</th></tr>
+<tr><td><span class="badge b-good">有信号</span></td><td>信噪比越过了判决门限。</td></tr>
+<tr><td><span class="badge b-good">杂散已抑制</span></td><td>该读数是板卡内部杂散，已被校准表扣掉。</td></tr>
+<tr><td><span class="badge b-warn">数据过期</span></td><td>这一格超过 1 秒没更新，通常是链路在掉数据或扫描停了。</td></tr>
+<tr><td><span class="badge b-warn">滤波边缘</span></td><td>信道落在模拟滤波器的过渡带里，读数会被削。</td></tr>
+<tr><td><span class="badge b-bad">削波</span></td><td>ADC 顶到了。降增益或加衰减，否则数值全部不可信。</td></tr>
+</table>
+<div class="note"><b>真机上你可能看不到「有信号」和「杂散已抑制」。</b>
+这两个徽标取决于固件的测量模式与校准表。把「参数 → 通道测量项」切成 <code>FULL</code> 再观察；
+在 <code>RSSI</code>/<code>SNR</code> 模式下固件只回精简帧，安静信道会统一读成 −63.8 dBFS、信噪比 0，这是固件行为不是 bug。</div>
+<h3>底部</h3>
+<p><span class="pill">开始 / 停止</span> 控制扫描，未连接时禁用。<span class="pill">45 ─────</span> 增益滑条，松手才发一条命令（不会一路刷板卡）。
+<span class="pill">峰值保持</span> 清空峰值保持曲线，让橙线重新从当前值开始。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s4">
+<h2><span class="n">4</span>频道细节：把单个信道摊开看</h2>
+<p>点任意一张卡片（或在主界面全景上选中某信道）就打开「频道细节」。这是逐信道排查最好用的一屏。</p>
+<figure><img src="img/03-zoom.webp" alt="频道细节视图" loading="lazy">
+<figcaption>图 4-1　B1 的展开频谱：横轴是相对标称频率的偏移（MHz），不再是整个频段。</figcaption></figure>
+<ul>
+  <li><span class="badge b-info">标称</span> 白线：该信道的实际采样频谱。</li>
+  <li><span class="badge b-good">最忙</span> 绿线：历史最忙包络；横线两端就是占用带宽。</li>
+  <li><span class="badge b-bad">中心</span> 红线：能量重心位置。</li>
+  <li>下面一行的读数：电平（含平滑值）、信噪比、底噪、中心偏移、峰值、最忙点、占用带宽及其起止偏移。</li>
+  <li>底部 ◀ ▶ 在计划内的信道之间切换，不用退回主界面。</li>
+</ul>
+<p>典型用法：怀疑两个信道互相干扰时，在这里看绿线的“脚”有没有伸进隔壁信道；调 VTX 时看红线离 0 偏移有多远。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s5">
+<h2><span class="n">5</span>扫描参数（⋯ 之外的所有可调项）</h2>
+<p>点控件条的「参数」打开。这个表的原则是<b>一个控件对应一条固件命令</b>，每次改完都会重读 <code>STATUS?</code>，所以你看到的是板卡的真实状态，不是应用记住的期望值。</p>
+<figure><img src="img/05-setup-a.webp" alt="扫描参数表上半部分" loading="lazy">
+<figcaption>图 5-1　上半：计划、扫描频道、LO 模式、增益、滤波、FFT 与采样点数。</figcaption></figure>
+<figure><img src="img/06-setup-b.webp" alt="扫描参数表中段" loading="lazy">
+<figcaption>图 5-2　中段：平均段数、通道测量项、窗口、平滑、显示频谱、检波、校准。</figcaption></figure>
+<figure><img src="img/07-setup-c.webp" alt="扫描参数表下半部分" loading="lazy">
+<figcaption>图 5-3　下半：调试开关、频谱方向、IQ 校正、显示范围、设备操作。</figcaption></figure>
+<table>
+<tr><th>控件</th><th>作用</th><th>建议</th></tr>
+<tr><td class="k">频道计划 → 编辑</td><td>换扫描哪 8 个频道（见第 6 节）。</td><td>日常只在这里改。</td></tr>
+<tr><td class="k">扫描频道 · 全选 / 全不选</td><td>在已选计划内临时启用/停用个别频道。</td><td>计划里的频道芯片在没读到状态前是禁用的。</td></tr>
+<tr><td class="k">LO 模式：分组 / 单频点</td><td>本振按信道分组跳，还是固定单频点。</td><td>保持「分组」。单频点用于把某个频率盯死。</td></tr>
+<tr><td class="k">增益模式：手动 / 硬件 AGC</td><td>接收增益由滑条定，还是交给前端自动跟。</td><td>比较功率、看底噪用「手动」；只想看有没有信号可以用 AGC。</td></tr>
+<tr><td class="k">RX 增益（PHY 表序号，非 dB）</td><td>0 到板卡上报的上限（例中 82）。<b>不是 dB</b>，别拿两档之差当 dB 用。</td><td>出现「削波」就往下降档，直到削波消失。</td></tr>
+<tr><td class="k">模拟滤波码（−1 为自动）</td><td>选前端模拟滤波器的档位；−1 让固件自己挑。</td><td>默认自动。</td></tr>
+<tr><td class="k">FFT 点数 64…2048</td><td>每次采集做 FFT 的点数（64/128/256/512/1024/2048），决定频率分辨率。</td><td>档案默认 1024。调大更细但每跳更慢。</td></tr>
+<tr><td class="k">采样点数（横向可滑）</td><td>每次采集多少个原始样本（256…16380）。</td><td>档案默认 4096。和 FFT 点数一起决定“每跳耗时”里的采集项。</td></tr>
+<tr><td class="k">平均段数</td><td>把多次结果平均成一条读数，1–64。</td><td>越大越平滑、越迟钝。找瞬时干扰时调回 1。</td></tr>
+<tr><td class="k">通道测量项 FULL / RSSI / SNR</td><td>固件回多少测量细节。<code>FULL</code> 回完整电平帧，另两种只回精简项。</td><td>想看徽标、占用带宽、中心偏移就用 <code>FULL</code>。</td></tr>
+<tr><td class="k">窗口 ± kHz（RSSI / 搜索）</td><td>算 RSSI 用的积分窗口，和找峰时向两侧搜索的范围。</td><td>默认 5000 / 12000。信号很宽时把搜索窗调大。</td></tr>
+<tr><td class="k">平滑系数 α（RSSI / 底噪）</td><td>两个指数平滑系数，越接近 1 跟得越快、越接近 0 越稳。</td><td>默认 0.250 / 0.020。底噪那条故意很慢，是为了留住“最净底噪”。</td></tr>
+<tr><td class="k">显示频谱（每 N 跳 · 格数 · ± kHz）</td><td>全景与瀑布的取样方式：每几跳画一行、横向多少格、覆盖多宽。</td><td>默认 4 / 256 / 40000。想让瀑布更“长记性”就加大 N。</td></tr>
+<tr><td class="k">检波方式 峰值 / 均值</td><td>频谱每一格取最大值还是平均值。</td><td>找窄带尖峰用峰值，看宽带功率用均值。</td></tr>
+<tr><td class="k">校准模式 CACHE / ONCE / EVERY + 立即校准</td><td>本底校准表怎么复用：<b>CACHE</b> 用存下来的表，<b>ONCE</b> 开机校一次，<b>EVERY</b> 每跳都校。</td><td>平时 CACHE。换了天线、加了衰减、或怀疑杂散判错时点「立即校准」。</td></tr>
+<tr><td class="k">调谐后稳定 µs</td><td>PLL 锁定后额外等多久再采。</td><td>默认 100 µs。改信道出现毛刺边带时往上加。</td></tr>
+<tr><td class="k">跳过调谐（调试）：仅 PLL / 关 RX 通道 / 跳过增益</td><td>调试用的旁路开关，会明显改变读数含义。</td><td>不要在日常使用里打开。</td></tr>
+<tr><td class="k">频谱方向 开 / 关</td><td>I/Q 共轭，等价于把频谱左右翻转。</td><td>如果发现“高侧的信号画到了低侧”，切这个。</td></tr>
+<tr><td class="k">IQ 校正 开 / 关</td><td>镜像抑制与直流偏置校正。</td><td>保持开。关掉后中心会出现一根假的直流尖峰。</td></tr>
+<tr><td class="k">显示 dB 范围（下限 / 上限）</td><td>纯显示：纵轴的 −105 … −15。</td><td>也可以直接用 ⋯ → 自动缩放。</td></tr>
+<tr><td class="k">设备：重启设备 / 烧录模式</td><td>发 <code>REBOOT</code> 或 <code>BOOTLOADER</code>。</td><td>「烧录模式」会让板卡进 ROM 下载口，<b>扫描会一直停到你重新烧录或按复位</b>。别在手滑时点。</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="s6">
+<h2><span class="n">6</span>换频道计划</h2>
+<p>「参数 → 频道计划 → 编辑」打开选择器：</p>
+<figure><img src="img/08-plan.webp" alt="选择扫描频道对话框" loading="lazy">
+<figcaption>图 6-1　六行波段 × 八个频道位，横向可滑。当前 B 波段整行被选中。</figcaption></figure>
+<ul>
+  <li>点<b>波段名</b>（如 <code>B Boscam B</code>）一次选中该波段全部 8 个；点<b>编号</b>逐个加选。</li>
+  <li>顶部「已选 8/8 · B1 B2 …」实时汇总，「清空」一键归零。</li>
+  <li>「确定」才下发；「取消」什么都不改。</li>
+</ul>
+<div class="note"><b>固件最多扫 8 个频道。</b>选满 8 个之后再点第 9 个不会生效。应用会按频率排序后下发
+<code>CHANNELS R1=5658 …</code>，所以信道编号 B1…B8 是“按频率排第几”，不一定等于波段表里的序号。</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s7">
+<h2><span class="n">7</span>⋯ 菜单：所有入口</h2>
+<figure><img src="img/04-menu.webp" alt="更多视图菜单" loading="lazy">
+<figcaption>图 7-1　控件条上的 ⋯ 打开的菜单。全景下方留不下这么多入口，所以整屏视图都在这里。</figcaption></figure>
+<table>
+<tr><th>菜单项</th><th>干什么</th><th>本教程</th></tr>
+<tr><td class="k">常规设置</td><td>界面语言：中文 / English / 跟随系统。中文是装机默认。</td><td>换语言会重建界面，串口跟着断一次再自动重连，正在跑的扫描会短暂中断；<b>正在计圈时换语言会结束那次计圈、圈数清零</b>。</td></tr>
+<tr><td class="k">自动缩放</td><td>按当前画面重算纵轴上下限，点了就收</td><td>第 3 节</td></tr>
+<tr><td class="k">RSSI 历史</td><td>各信道电平随时间变化</td><td>第 8 节</td></tr>
+<tr><td class="k">扫描器遥测</td><td>每跳耗时、吞吐、错误、内存</td><td>第 9 节</td></tr>
+<tr><td class="k">协议控制台</td><td>原始帧/JSON 日志 + 手发命令</td><td>第 10 节</td></tr>
+<tr><td class="k">GPIO 配置</td><td>板卡输出引脚</td><td>第 11 节</td></tr>
+<tr><td class="k">录制与导出</td><td>.widscan58 录制/回放、CSV</td><td>第 12 节</td></tr>
+<tr><td class="k">计圈（RotorHazard）</td><td>把板卡当无人机计时器接收机</td><td>第 13 节</td></tr>
+<tr><td class="k">功率计</td><td>经衰减器折算成 mW / dBm</td><td>第 14 节</td></tr>
+<tr><td class="k">原始 I/Q 快照</td><td>抓一段 I/Q 看星座与频谱</td><td>第 15 节</td></tr>
+<tr><td class="k">使用帮助</td><td>打开本教程：离线页面，不联网、不申请权限</td><td>就是这一页</td></tr>
+</table>
+<p>下面按菜单顺序逐个讲。除了「自动缩放」是一次性动作，其余都是主界面之上的浮层：点右下角「关闭」或按返回键退出，扫描照旧在跑。只有「使用帮助」会另开一个页面——它是真正的新窗口，所以按上面的规则，打开它时串口会先关掉（状态行短暂显示「已暂停」），按返回键回主界面后自动重连、重新握手，见第 16 节。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s8">
+<h2><span class="n">8</span>RSSI 历史</h2>
+<figure><img src="img/09-history.webp" alt="RSSI 历史曲线" loading="lazy">
+<figcaption>图 8-1　八条曲线对应八个信道，横轴是“多少秒前”，右侧 0 就是现在。</figcaption></figure>
+<ul>
+  <li><span class="pill">10 秒</span>…<span class="pill">120 秒</span> 选回看时长。</li>
+  <li><span class="pill">平滑</span> / <span class="pill">原始</span> 切换画指数平滑后的线还是逐点原始线。找抖动来源时用原始。</li>
+  <li>在图上<b>横向拖动</b>会立起指针，直接读该时刻每个信道的电平；「取消指针」清掉。</li>
+  <li>曲线左端空一截是正常的：那个时间点还没有采样（视图刚打开，或那段时间断链）。</li>
+</ul>
+<p>用途：判断干扰是常驻还是间歇。B5 一直压在 −25 而 B1 每隔十几秒抬一次，前者是固定发射机，后者更像有人遥控开关机。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s9">
+<h2><span class="n">9</span>扫描器遥测</h2>
+<figure><img src="img/10-telemetry.webp" alt="扫描器遥测面板" loading="lazy">
+<figcaption>图 9-1　左列是节拍与链路，右列是耗时与错误，下方是每跳耗时分解。</figcaption></figure>
+<table>
+<tr><th>指标</th><th>含义 / 异常时怎么办</th></tr>
+<tr><td class="k">旋转速率</td><td>整张计划每秒跑几圈。明显低于「圈/秒」预期时看下面的分解。</td></tr>
+<tr><td class="k">每跳耗时</td><td>跳一个信道到出结果要多久，附峰值。调谐+采集+DSP 三项之和。</td></tr>
+<tr><td class="k">调谐 / 采集 / DSP</td><td>三段的分项耗时。采集项大 → 减小「采样点数」或「FFT 点数」；调谐项大 → 减小「调谐后稳定 µs」。</td></tr>
+<tr><td class="k">设备发送队列</td><td>就是状态行的「链路 %」。持续高 → 手机取不走数据，先怀疑线和 OTG 口。</td></tr>
+<tr><td class="k">链路吞吐</td><td>实际字节速率与累计量，用来判断是不是某个设置把带宽吃光了。</td></tr>
+<tr><td class="k">错误</td><td><code>0 CRC</code> 是好的。CRC 在涨 = 物理层在坏，换线；「重同步 N 字节」是丢帧后重新对齐的代价。</td></tr>
+<tr><td class="k">空闲堆</td><td>板卡内部 RAM 剩余。一路往下掉不回升 = 固件内存问题，把数值记下来反馈。</td></tr>
+<tr><td class="k">每跳耗时分解</td><td>堆叠面积图，最近 N 跳。在图上拖动看单跳分解，能抓到偶发的慢跳。</td></tr>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="s10">
+<h2><span class="n">10</span>协议控制台</h2>
+<figure><img src="img/11-console.webp" alt="协议控制台" loading="lazy">
+<figcaption>图 10-1　上面是滚动日志，中间是常用查询快捷键，下面是自由命令输入。</figcaption></figure>
+<ul>
+  <li>日志行格式 <code>0.13 &lt; STATUS {…}</code>：时间戳（秒）、方向、帧名、负载。<code>&gt;</code> 是应用发给板卡的，<code>&lt;</code> 是板卡回来的。</li>
+  <li>快捷键 <span class="pill">INFO</span><span class="pill">STATUS?</span><span class="pill">TIMING?</span><span class="pill">SPURS?</span><span class="pill">GAIN?</span> 就是替你敲这几条命令。</li>
+  <li>输入框可以发任意固件命令，例如 <code>TIMING?</code>、<code>GPIO 2 HIGH</code>、<code>METRICS FULL</code>。按「发送」。</li>
+  <li>设备自己打印的日志帧（<code>INFO widscan58|esp32-c5|…</code>）也混在这里，是排查固件问题的第一手材料。</li>
+</ul>
+<div class="caution"><b>这里发的命令不会写进任何“设置页”。</b>它是直通固件的旁路：改完不会同步回参数表，除非参数表重新读 <code>STATUS?</code>。不确定含义的命令别乱发，尤其是 <code>REBOOT</code> / <code>BOOTLOADER</code>。</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s11">
+<h2><span class="n">11</span>GPIO 配置</h2>
+<figure><img src="img/12-gpio.webp" alt="GPIO 配置" loading="lazy">
+<figcaption>图 11-1　每个引脚一行：不使用 / 低 / 高。</figcaption></figure>
+<ul>
+  <li>说明文字已经点明用途：<b>设备启动时设为输出的引脚，拉低或拉高，例如天线切换开关</b>。改完立即生效。</li>
+  <li>标成 <code>Flash / USB</code> 的引脚（例中 GPIO 13、14）被占用，不能配。</li>
+  <li>「保存」把当前选择写进板卡的启动配置，「还原」丢掉未保存的改动——两个按钮<b>只有在你真的改过东西之后才可点</b>。</li>
+</ul>
+<div class="caution"><b>先查你这块板的引脚表再接线。</b>同一颗 ESP32-C5 在不同开发板上的排针顺序不同，拉高一个已经接了 LED 或天馈切换器的脚可能造成意外。不确定的脚就留在「不使用」。</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s12">
+<h2><span class="n">12</span>录制与导出</h2>
+<figure><img src="img/13-session.webp" alt="录制与导出" loading="lazy">
+<figcaption>图 12-1　五个动作：开始录制、选择回放文件、停止回放、导出频道 CSV、导出频谱 CSV。</figcaption></figure>
+<table>
+<tr><th>动作</th><th>说明</th></tr>
+<tr><td class="k">开始录制</td><td>把设备发来的<b>原始字节流</b>写成 <code>.widscan58</code> 文件。回放时走的解析路径和真板卡一模一样，所以能拿去网页版复现同一个现场。</td></tr>
+<tr><td class="k">选择回放文件…</td><td>挑一个 .widscan58 回放。回放期间状态行显示「回放 文件名」，并提示「回放是只读的：不能再发送命令」——你不能给一个文件发命令。文件里没有完整记录时会写「这个文件里没有一条完整记录」，放完写「回放结束」并回到待机。</td></tr>
+<tr><td class="k">停止回放</td><td>只在回放中可点。</td></tr>
+<tr><td class="k">导出频道 CSV</td><td>计划里每个信道一行，最后一次跳到的全部读数：<code>id, name, freq_khz, enabled, flags, rssi_dbfs, rssi_ema_dbfs, noise_dbfs, snr_db, clear_floor_dbfs, peak_dbfs, peak_offset_hz, centroid_offset_hz, obw_lo_hz, obw_hi_hz, age_s</code>。</td></tr>
+<tr><td class="k">导出频谱 CSV</td><td>把全景横向离散成 1000 个点，每行 <code>freq_khz, live_dbfs, max_hold_dbfs, avg_dbfs, noise_floor_dbfs</code>——导的是画面本身，拿去别的软件能重画。<b>导出不依赖录制</b>，连着板卡就能导。</td></tr>
+</table>
+<p>两种 CSV 都没有测到的格子留<b>空字段</b>（不是 0，也不是 NaN）。导出用系统的文件选择器（SAF），可以存到“下载”、SD 卡或任意文件客户端的目录。成功后状态行写「已保存 …」并带上文件名和大小。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s13">
+<h2><span class="n">13</span>计圈（RotorHazard）</h2>
+<p>这个模式把板卡变成无人机穿越赛的计时接收机：8 个座位各守一个信道，飞手骑车过门限线时判定过线并计圈。打开后板卡不再跑普通扫描计划，状态行会追加「计圈（RotorHazard）」。</p>
+<div class="note"><b>计圈需要真板卡。</b>普通的模拟设备数据不能计圈，会提示「模拟设备不能计圈：请连接板卡，或用 <code>--ez rh true</code> 启动模拟计圈。」进入过程中状态行写「正在进入计圈模式…」，退出后写「已退出计圈模式」。</div>
+<h3>座位</h3>
+<figure><img src="img/14-rh-seats.webp" alt="RotorHazard 座位页" loading="lazy">
+<figcaption>图 13-1　每座位：当前电平、圈数、门限刻度，以及进入/脱离两条滑条。</figcaption></figure>
+<ul>
+  <li>顶部「8 个座位工作中 · 轮询 0 ms · 每座 200 次/秒」是固件回报的工作状态。</li>
+  <li>大号数字（例中 65）是原始码值，旁边 −47.5 dBFS 是换算后的电平。横条上的<b>橙线=进入门限、绿线=脱离门限</b>。</li>
+  <li>「进入」「脱离」两条滑条设定迟滞门限：电平冲过“进入”算过线，回落到“脱离”以下才允许下一次过线。两条太接近会一次过线记多圈。</li>
+  <li>「取当前」把滑条值设成此刻读到的电平——最常用的调门限方法：先让赛道空着，记下底噪，再让车手在起点冲一次，把门限卡在两者之间。</li>
+  <li>「圈数 / 最近单圈 / 最快 3 圈 / 过线峰值 / 峰·谷」是该座位的统计。</li>
+</ul>
+<h3>电平</h3>
+<figure><img src="img/15-rh-levels.webp" alt="RotorHazard 电平曲线" loading="lazy">
+<figcaption>图 13-2　选中座位的电平历史，两条虚线是门限。</figcaption></figure>
+<ul>
+  <li><span class="pill">10 秒</span>…<span class="pill">120 秒</span> 回看时长；<span class="pill">B1</span>…<span class="pill">B8</span> 选要看哪个座位（没分到信道的座位不可点）。</li>
+  <li>绿虚线 = 进入门限，橙虚线 = 脱离门限，圆点 = 判定为过线的那一帧。</li>
+  <li>纵轴是码值，换算式直接标在图上：<code>dBFS = 码值/4 − 63.75</code>。</li>
+  <li>调门限基本都靠这一屏：把车手真实过线的尖峰和底噪带拉开，门限画在中间。</li>
+</ul>
+<h3>事件</h3>
+<figure><img src="img/16-rh-events.webp" alt="RotorHazard 事件列表" loading="lazy">
+<figcaption>图 13-3　过线事件流水，橙色是被规则忽略的。</figcaption></figure>
+<ul>
+  <li>每行：<code>时刻 · 座位 · 信道 · 过线 · 单圈 8.970 s · 峰值 139</code>。橙色行写着「忽略 (7.507 s)」= 短于「最短单圈」，判为抖动。</li>
+  <li><span class="pill">清空</span> 清掉列表。<span class="pill">分开显示进入/脱离</span> 把两类事件拆成两行看迟滞。</li>
+  <li><span class="pill">显示最快连续</span> 只有在固件开启了最快圈规则时可点。</li>
+  <li><span class="pill">最短单圈</span> 滑条（例中 8 s）：比这更早的过线会被忽略——防抖主开关。<span class="pill">最快连续圈数</span>（例中 3）：统计几圈组合的最快成绩。</li>
+  <li><span class="pill">播报单圈</span> 打开后用系统语音念过线成绩，下面会多出试播和音量/语速/音调滑条。</li>
+</ul>
+<h3>接收机</h3>
+<figure><img src="img/17-rh-receivers.webp" alt="RotorHazard 接收机设置" loading="lazy">
+<figcaption>图 13-4　这一页改的是固件侧的取样与输出方式。</figcaption></figure>
+<table>
+<tr><th>控件</th><th>作用</th></tr>
+<tr><td class="k">接收增益（PHY 表索引）</td><td>和主界面的增益是同一个量，这里独立可调。</td></tr>
+<tr><td class="k">本振方案：分组 / 逐通道</td><td>座位按信道分组跳，还是逐通道轮询。</td></tr>
+<tr><td class="k">输出量：RSSI / SNR</td><td>喂给计时算法的是绝对电平还是信噪比。场地底噪稳定用 RSSI，有共用频源时用 SNR。</td></tr>
+<tr><td class="k">输出滤波：中值 / 均值</td><td>中值抗脉冲，均值更平滑。</td></tr>
+<tr><td class="k">FFT 点数</td><td>例中 64/128/256 点（括号里是需要的原始采样数）。点数越多分辨率越高、每座更新率越低。</td></tr>
+<tr><td class="k">存为默认 / 恢复默认</td><td>把这一整组写进板卡，下次开机就是它。</td></tr>
+<tr><td class="k">链路：N 次读、M 次写、K 次读取失败</td><td>计圈期间的通信计数。<b>“读取失败”在涨</b>就是轮询跟不上，降 FFT 点数或减少座位数。</td></tr>
+</table>
+<p>底部「频道计划」直接跳到第 6 节的选择器；「退出计圈」把板卡交还给普通扫描。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s14">
+<h2><span class="n">14</span>功率计</h2>
+<figure><img src="img/18-power.webp" alt="功率计模式" loading="lazy">
+<figcaption>图 14-1　每信道一行：mW 大字 + dBm + 板端电平、原始电平、噪声。</figcaption></figure>
+<div class="caution"><b>必须经衰减器连接 VTX。</b>页面顶部那行红字不是免责声明：板卡前端能扛的功率很小，直接把发射机接上来会打坏前端。先用「衰减器」填对 dB 数，再谈读数。</div>
+<ul>
+  <li><span class="pill">衰减器 30 dB</span> 你在天线口串了多少 dB，这里就填多少。所有 dBm / mW 都是<b>加上这个数以后</b>的天线口功率，「板端 −31.2 dBm」才是板卡自己看到的值。</li>
+  <li><span class="pill">平滑 关 / 0.1 s / 0.5 s / 1 s / 3 s</span> 时间常数。测稳态功率用 0.5 s 以上，看脉冲调制切「关」。</li>
+  <li><span class="pill">编辑</span> 进入勾选模式，<span class="pill">全部</span> / <span class="pill">全不</span> 快速选要显示哪些信道。</li>
+  <li>每行三个来源值：电平（dBFS）、噪声（dBFS）、板端（dBm），大字是折算后的 mW 与 dBm。</li>
+  <li>「衰减器对照」打开一张选型表，四列是 VTX 功率 / 衰减器 / 板端 / 耐功率：25 mW(+14 dBm) 配 30 dB、板端 −16 dBm、衰减器耐 0.5 W 以上；500 mW(+27) 配 40 dB、板端 −13、耐 1 W；1 W(+30) 配 40 dB、板端 −10、耐 2 W；2 W(+33) 配 40 dB、板端 −7、耐 5 W。ESP 前端大约只能读 <b>−32 … −5 dBm</b>，衰减量按表里“至少足够”的那一档往上取。</li>
+  <li>「退出功率计」把板卡交还给普通扫描。</li>
+</ul>
+<p>进入功率计时应用会<b>替你切到测量用的那套扫描</b>（单 LO、手动增益 0、±15 MHz 窗口），退出时把原来的 MODE / GAIN 等还原回去。所以：</p>
+<ul>
+  <li>中途拔线就还原不了，重新连上后去「参数」确认。</li>
+  <li>如果你自己在功率计开着时改了增益或 LO 模式，会看到「设备现在不是测量用的那套扫描」——退出再进一次即可。</li>
+  <li>底部那行小字说明功率值来自单块 C5 的校准，<b>只是近似值</b>；衰减器标称值也常常不准，把它当相对功率用。</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="s15">
+<h2><span class="n">15</span>原始 I/Q 快照</h2>
+<p>抓一段未经 FFT 的 I/Q 原始样本，用来回答“这个尖峰是真的还是算法/镜像造出来的”。</p>
+<figure><img src="img/19-rawiq-empty.webp" alt="原始 I/Q 快照空态" loading="lazy">
+<figcaption>图 15-1　还没采集时三块画布都是空的。</figcaption></figure>
+<figure><img src="img/20-rawiq.webp" alt="原始 I/Q 快照采集结果" loading="lazy">
+<figcaption>图 15-2　采集 16380 样本后的结果：星座、I/Q 时间波形、快照自己的频谱。</figcaption></figure>
+<ol>
+  <li><span class="pill">LO kHz</span> 本振频率，单位 kHz（5733000 = 5733 MHz）。点<span class="pill">用所选通道 LO</span>直接填当前信道的频率。</li>
+  <li><span class="pill">样本数 1024 / 4096 / 8192 / 16380</span> 抓多少点。上限由板卡在 <code>STATUS?</code> 里报的 <code>rawiq_max</code> 决定，<b>超过上限的档位会被禁用</b>（禁用态在这个主题下不明显，看点了有没有反应）。</li>
+  <li>点<span class="pill">采集</span>。板卡分块（每块 1024 点）把样本推过来，全部到齐后一次算 FFT——不是每帧重算。</li>
+</ol>
+<h3>三块画布</h3>
+<table>
+<tr><th>画布</th><th>看什么</th></tr>
+<tr><td class="k">I/Q 星座图</td><td>横 I 纵 Q。载波正好在本振上 → 聚成一个点；有偏移 → 转圈的弧或环；镜像/直流问题 → 点云整体偏心。</td></tr>
+<tr><td class="k">I·Q — 传输计数</td><td>两路随样本号的原始波形，蓝 I 橙 Q。看有没有削顶、有没有明显的直流偏置。</td></tr>
+<tr><td class="k">每 bin dBFS</td><td>用这段快照自己算出的频谱，横轴是真实频率。和主界面的全景对照着看，能确认尖峰是真的。</td></tr>
+</table>
+<p>标题下面那行小字是这段快照的体检报告：<code>LO 5733.000 MHz · 80.0 MS/s · 16380 样本 · ×4（10 bit 计数）· 直流 (−10.2, −54.9) · RMS 5.3 · 峰值 60/512 · 已共轭</code>。其中「×4（10 bit 计数）」说明画的是传输值放大后的刻度；「直流」是 I/Q 两路的直流偏置；「已共轭」表示频谱方向开关生效了。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="s16">
+<h2><span class="n">16</span>断链与常见故障</h2>
+<p>状态行是唯一的“诊断面板”，出问题先看它写什么。</p>
+<table>
+<tr><th>现象 / 状态行</th><th>原因</th><th>怎么办</th></tr>
+<tr><td class="k">请用 USB-C 连接 Widscan58 板卡。</td><td>没找到板卡</td><td>换一根<b>数据线</b>；确认手机开了 OTG；板卡通电指示灯要亮。</td></tr>
+<tr><td class="k">已断开：permission denied for …</td><td>USB 授权弹窗被点了拒绝</td><td>拔掉重插，这次勾上「每次连接此设备时都允许」。</td></tr>
+<tr><td class="k">/dev/bus/usb/… 不是 CDC 串口</td><td>设备枚举出来了，但没有 CDC 数据接口</td><td>固件没跑起来（停在 bootloader）或板子不是原生 USB 型号。重新上电；必要时重刷固件。</td></tr>
+<tr><td class="k">打开失败：…</td><td>串口被别的程序占着</td><td>关掉电脑上或手机上其他连着这块板的应用（浏览器版的串口工具是最常见的元凶）。</td></tr>
+<tr><td class="k">已暂停</td><td>应用离开了前台：退到后台、<b>打开「使用帮助」</b>，或在「常规设置」里换了语言——串口按设计关闭了</td><td>回到主界面会自动重连并重新握手，不用拔线。</td></tr>
+<tr><td class="k">无数据，重新进入监听模式</td><td>串口还开着但板卡超过 3 秒没发东西</td><td>应用会自动重发 <code>PROTOCOL MONITOR</code> 并重新握手。反复出现说明固件在重启，去看协议控制台的设备日志。</td></tr>
+<tr><td class="k">连接中…</td><td>握手没完成</td><td>等几秒；不行就拔插一次。</td></tr>
+<tr><td class="k">卡片全是「数据过期」</td><td>扫描停了或链路断了</td><td>按「开始」；确认状态行里链路 % 不是 100%。</td></tr>
+<tr><td class="k">链路 % 持续很高 / CRC 在涨</td><td>USB 带宽或线材不稳</td><td>换短线、去掉转接头、降低「采样点数」或「FFT 点数」。</td></tr>
+<tr><td class="k">「这块板没有功率校准：功率计模式需要 ESP32-C5 板卡」</td><td>功率计的 mW/dBm 换算表是按 C5 标定的，别的板没有这张表</td><td>换 C5 板，或者只看 dBFS 相对值。</td></tr>
+<tr><td class="k">卡片出现「削波」</td><td>增益太高或没加衰减</td><td>降 RX 增益；测发射机必须串衰减器。</td></tr>
+<tr><td class="k">安静信道都读 −63.8、信噪比 0</td><td>固件在 <code>RSSI</code>/<code>SNR</code> 测量模式下只回精简帧</td><td>把「通道测量项」切回 <code>FULL</code>。这是固件行为，不是应用算错。</td></tr>
+<tr><td class="k">点「参数」「开始」没反应</td><td>还没连上设备，按钮是禁用的，而禁用态几乎不变灰</td><td>看状态行是否已经出现设备描述。</td></tr>
+</table>
+<div class="tip"><b>报问题时带上这些</b>：状态行整串文字、⋯ → 扫描器遥测 的截图、⋯ → 协议控制台 里最后十几行。这三样基本能定位 90% 的问题。</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="s17">
+<h2><span class="n">17</span>术语表</h2>
+<table>
+<tr><th>术语</th><th>在本应用里指什么</th></tr>
+<tr><td class="k">dBFS</td><td>相对 ADC 满量程的分贝数，<b>不是</b>天线口功率。0 dBFS 是顶格，越负越弱。要看真实功率请用功率计模式并填对衰减量。</td></tr>
+<tr><td class="k">底噪 / 最净底噪</td><td>当前平滑本底 / 历史上见过的最低本底。两者差得多说明有间歇性干扰。</td></tr>
+<tr><td class="k">信噪比 SNR</td><td>电平 − 底噪。判占用的第一指标。</td></tr>
+<tr><td class="k">占用带宽 OBW</td><td>信号实际吃掉的带宽，由「最忙」包络算出。</td></tr>
+<tr><td class="k">中心偏移</td><td>能量重心相对信道标称频率的偏移，单位 kHz。</td></tr>
+<tr><td class="k">LO / 本振</td><td>接收机的中频基准频率。分组模式下每个信道有自己的 LO。</td></tr>
+<tr><td class="k">跳频 / 一圈</td><td>板卡依次切过计划里的每个信道叫一次跳；把整张计划走完一遍叫一圈。</td></tr>
+<tr><td class="k">链路 %</td><td>板卡输出队列占用率（千分比换算）。0% 最健康。</td></tr>
+<tr><td class="k">PHY 表序号</td><td>ESP32-C5 接收增益不是连续 dB，而是查表；这里给的是表下标。</td></tr>
+<tr><td class="k">检波方式</td><td>每格取峰值还是均值，沿用模拟仪表的叫法。</td></tr>
+<tr><td class="k">校准（CACHE/ONCE/EVERY）</td><td>板卡测自己的杂散与本底并扣掉。CACHE 复用存好的表，ONCE 开机一次，EVERY 每跳现校。</td></tr>
+<tr><td class="k">杂散 spur</td><td>接收机自己产生的假信号。被校准表认出来的会标成「杂散已抑制」。</td></tr>
+<tr><td class="k">I/Q</td><td>正交两路基带样本。原始 I/Q 快照抓的就是它，FFT 之前。</td></tr>
+<tr><td class="k">共轭 / 频谱方向</td><td>把 I/Q 取共轭等价于频谱左右翻转，用来纠正接线带来的上下边带颠倒。</td></tr>
+<tr><td class="k">座位 seat</td><td>RotorHazard 里的一个计时通道，对应一个信道和一个门限。</td></tr>
+<tr><td class="k">进入 / 脱离门限</td><td>迟滞比较的两个电平：冲过“进入”算过线，跌回“脱离”以下才复位。</td></tr>
+<tr><td class="k">.widscan58</td><td>录制下来的原始字节流，可回放，也能在网页版打开。</td></tr>
+</table>
+</section>
+
+</main>
+
+<footer>
+  <p>本教程与应用打包在同一份 APK 里，完全离线可读。截图取自内置模拟设备数据。</p>
+  <p>图片看不清时点一下可放大，再点关闭。</p>
+</footer>
+
+<div id="lightbox" role="dialog" aria-label="放大图片"><p class="hint">点任意处关闭</p><img alt=""></div>
+
+<script>
+// Tap a figure to see it at full size; the WebView can also pinch-zoom this page.
+(function(){
+  var box=document.getElementById('lightbox'),img=box.querySelector('img');
+  document.addEventListener('click',function(e){
+    if(box.classList.contains('on')){box.classList.remove('on');img.removeAttribute('src');return;}
+    var t=e.target;
+    if(t.tagName==='IMG'&&t.closest('figure')){img.src=t.src;box.classList.add('on');box.scrollTop=0;}
+  });
+})();
+</script>
+</body>
+</html>

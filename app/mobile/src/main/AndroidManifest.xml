@@ -5,6 +5,14 @@
         android:name="android.hardware.usb.host"
         android:required="true" />
 
+    <!-- Without this, Android 11+ package visibility hides every text-to-speech engine from us
+         and the lap calls fail silently rather than loudly. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
@@ -42,5 +50,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The tutorial is a page in assets, opened only from inside the app. -->
+        <activity
+            android:name=".HelpActivity"
+            android:configChanges="screenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:exported="false"
+            android:label="@string/help_title"
+            android:screenOrientation="portrait" />
     </application>
 </manifest>

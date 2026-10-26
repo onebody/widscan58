@@ -38,12 +38,21 @@ class BandsTest {
     }
 
     @Test
-    fun `restore commands set the plan, the lo mode and the gain`() {
+    fun `restore commands set the plan, the lo mode, the gain and the mask`() {
         val s = DeviceSettings.of(listOf("R1", "R2"), LoPlan.SINGLE, GainMode.MANUAL, 40)
         assertEquals(
-            listOf("CHANNELS R1=5658 R2=5695", "MODE SINGLE", "GAIN MANUAL 40"),
+            listOf("CHANNELS R1=5658 R2=5695", "MODE SINGLE", "GAIN MANUAL 40", "ENABLE 3"),
             s.restoreCommands(),
         )
+    }
+
+    @Test
+    fun `the mask is trimmed to the plan that the channels command rebuilds`() {
+        // A plan shortened under a mask saved when it was longer must not switch
+        // channels the board no longer has.
+        val s = DeviceSettings.of(Bands.names("R").take(3), LoPlan.GROUP, GainMode.MANUAL, 45, enabled = 0xff)
+        assertEquals("ENABLE 7", s.restoreCommands().last())
+        assertEquals(0b101, DeviceSettings.of(Bands.names("R"), LoPlan.GROUP, GainMode.MANUAL, 45, 5).enabledFor())
     }
 
     @Test

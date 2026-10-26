@@ -58,6 +58,8 @@ class DeviceSettings(
     val mode: LoPlan,
     val gainMode: GainMode,
     val gain: Int,
+    /** Which channel ids of [channels] the board measures, one bit per channel. */
+    val enabled: Int = 0xff,
 ) {
     companion object {
         val DEFAULT = DeviceSettings(
@@ -68,11 +70,14 @@ class DeviceSettings(
         )
 
         /** Keep a plan the device can actually tune: known channels, at most 8. */
-        fun of(channels: List<String>, mode: LoPlan, gainMode: GainMode, gain: Int): DeviceSettings {
+        fun of(channels: List<String>, mode: LoPlan, gainMode: GainMode, gain: Int, enabled: Int = 0xff): DeviceSettings {
             val plan = Bands.normalize(channels).ifEmpty { DEFAULT.channels }
-            return DeviceSettings(plan, mode, gainMode, if (gain < 0) DEFAULT.gain else gain)
+            return DeviceSettings(plan, mode, gainMode, if (gain < 0) DEFAULT.gain else gain, enabled)
         }
     }
+
+    /** The stored mask, trimmed to a plan that no longer reaches as far as it did. */
+    fun enabledFor(size: Int = channels.size): Int = enabled and ((1 shl size.coerceIn(0, MAX_CHANNELS)) - 1)
 }
 
 /** Commands that put a freshly connected (or rebooted) device in the stored state. */
@@ -80,4 +85,6 @@ fun DeviceSettings.restoreCommands(): List<String> = listOf(
     Bands.channelsCommand(channels),
     "MODE ${mode.name}",
     if (gainMode == GainMode.MANUAL) "GAIN MANUAL $gain" else "GAIN HARDWARE",
+    // CHANNELS switches every channel of the new plan back on, so the mask has to follow it.
+    DeviceCommands.enable(enabledFor()),
 )

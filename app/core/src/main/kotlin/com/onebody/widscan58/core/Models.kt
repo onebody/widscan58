@@ -20,6 +20,21 @@ object ChannelFlag {
     const val SPUR = 32
 }
 
+/** Where a protocol-console line came from: the web's LogLine dirs. */
+enum class LogDir {
+    RX,
+    TX,
+    INFO,
+    ERROR,
+    ;
+
+    /** The web's own prefix: a sent command points out, everything else points in. */
+    val arrow: String get() = if (this == TX) ">" else "<"
+}
+
+/** One console line, `t` seconds after the store opened. */
+class LogLine(val t: Double, val dir: LogDir, val text: String)
+
 /** What the device measures per channel (METRICS command). */
 enum class MetricsMode {
     FULL,
@@ -170,8 +185,9 @@ class Status(
     val rssiHz: Long,
     val searchHz: Long,
     val dcGuard: Int,
-    val ema: Int,
-    val clearEma: Int,
+    // STATUS reports the smoothing factors as fractions; the EMA command takes thousandths.
+    val ema: Double,
+    val clearEma: Double,
     val signalDb: Double,
     val avgShift: Int,
     val specEvery: Int,

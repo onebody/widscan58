@@ -25,6 +25,25 @@ class Series(val capacity: Int) {
         }
     }
 
+    /**
+     * The points at most [maxAge] seconds before [now], oldest to newest.
+     * Times only ever increase here, so the window opens where a binary search says.
+     */
+    fun forEachWithin(now: Double, maxAge: Double, action: (time: Double, value: Float) -> Unit) {
+        val start = ((head - size) % capacity + capacity) % capacity
+        val cutoff = now - maxAge
+        var lo = 0
+        var hi = size
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if (t[(start + mid) % capacity] < cutoff) lo = mid + 1 else hi = mid
+        }
+        for (j in lo until size) {
+            val k = (start + j) % capacity
+            action(t[k], v[k])
+        }
+    }
+
     fun newest(): Float? = if (size == 0) null else v[(head - 1 + capacity) % capacity]
 
     fun clear() {

@@ -3,6 +3,7 @@
 // Mirrors web/src/model/store.ts. GPL-3.0-or-later.
 package com.onebody.widscan58.core
 
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.pow
 
 /** PROFILE/STATUS answers carry JSON, which only the platform layer can parse. */
@@ -10,12 +11,16 @@ interface ReplyCodec {
     fun profile(json: String): Profile?
 
     fun status(json: String): Status?
+
+    fun gpio(json: String): List<GpioPin>?
 }
 
 object NoReplies : ReplyCodec {
     override fun profile(json: String): Profile? = null
 
     override fun status(json: String): Status? = null
+
+    override fun gpio(json: String): List<GpioPin>? = null
 }
 
 class ChannelState(capacity: Int) {
@@ -27,6 +32,9 @@ class ChannelState(capacity: Int) {
     val rssi = Series(capacity)
     val ema = Series(capacity)
     val floor = Series(capacity)
+
+    /** 1 where the capture clipped, at the same times as [rssi]: power averaging leaves those out. */
+    val clipped = Series(capacity)
 }
 
 /** One LO's spectrum, with the holds derived from it. */
@@ -41,7 +49,8 @@ fun smoothedSeries(cs: ChannelState): Series {
 class Store(
     private val clock: () -> Long,
     private val codec: ReplyCodec = NoReplies,
-    historySeconds: Int = 30,
+    /** Deep enough for the widest history span the UI offers, as in the web store. */
+    historySeconds: Int = 120,
 ) {
     private val capacity = historySeconds * 250
     private val t0 = clock()
@@ -66,10 +75,34 @@ class Store(
         private set
     val segments = LinkedHashMap<Long, Segment>()
 
+    /** The last hops' time breakdown, oldest first: what the per-hop chart draws. */
+    val hopTimes = ArrayList<Hop>()
+
     /** Per-bin noise floor (dBFS) measured at each LO. */
     val floorByLo = LinkedHashMap<Long, Double>()
     var spursKhz: List<Double> = emptyList()
         private set
+
+    /** The board's boot-time output pins, as the last GPIO? answered them. */
+    var gpio: List<GpioPin> = emptyList()
+        private set
+
+    /** The last finished raw I/Q capture, chunks and all: what the snapshot view draws. */
+    var rawiq: RawIq? = null
+        private set
+    private val rawiqChunks = RawIqAssembler()
+
+    /** The protocol console's ring: what the board said, what we asked it to do. The RH poller
+     *  appends to it while the screen walks it, hence the snapshot-iterator list. */
+    val log = CopyOnWriteArrayList<LogLine>()
+
+    /** A console line. The web caps the text as well as the ring, so a chatty
+     *  reply cannot push the useful lines out of sight. */
+    fun addLog(dir: LogDir, text: String) {
+        log += LogLine(now(), dir, if (text.length > LOG_TEXT_MAX) text.take(LOG_TEXT_MAX) + " …" else text)
+        if (log.size > LOG_MAX) log.removeAt(0)
+        touch()
+    }
 
     /** Changes with the profile or its channel plan; per-channel state is keyed by plan index. */
     var planKey = ""
@@ -118,22 +151,31 @@ class Store(
 
     fun ingest(item: StreamItem) {
         when (item) {
-            is StreamItem.Text -> ingestText(item.line)
+            is StreamItem.Text -> {
+                ingestText(item.line)
+                addLog(if (item.line.startsWith("ERR")) LogDir.ERROR else LogDir.RX, item.line)
+            }
+
             is StreamItem.Frame -> when (item.type) {
                 FrameType.METRICS -> onMetrics(parseMetrics(item.payload))
                 FrameType.LEVELS -> onMetrics(parseLevels(item.payload))
                 FrameType.SPECTRUM -> onSpectrum(parseSpectrum(item.payload))
                 FrameType.TELEMETRY -> telemetry = parseTelemetry(item.payload)
-                else -> Unit // raw IQ and device log lines have no view on the phone
+                FrameType.RAWIQ -> rawiqChunks.add(item.payload)?.let { rawiq = it }
+                // The firmware has never used this type, but the web prints it, so we do too.
+                FrameType.LOG -> addLog(LogDir.INFO, String(item.payload, Charsets.UTF_8).trim('\u0000', '\n', '\r'))
+                else -> Unit
             }
         }
         version++
     }
 
     private fun ingestText(line: String) {
+        fun badReply() = addLog(LogDir.ERROR, "bad ${line.substringBefore(' ')} reply; ignored")
         when {
-            line.startsWith("PROFILE ") -> codec.profile(line.substringAfter(' '))?.let(::setProfile)
-            line.startsWith("STATUS ") -> codec.status(line.substringAfter(' '))?.let(::setStatus)
+            line.startsWith("PROFILE ") -> codec.profile(line.substringAfter(' '))?.let(::setProfile) ?: badReply()
+            line.startsWith("STATUS ") -> codec.status(line.substringAfter(' '))?.let(::setStatus) ?: badReply()
+            line.startsWith("GPIO ") -> codec.gpio(line.substringAfter(' '))?.let { gpio = it } ?: badReply()
             line.startsWith("INFO ") -> info = line.substring(5)
             line.startsWith("SPURS ") -> {
                 val f = line.split(' ')
@@ -145,6 +187,8 @@ class Store(
 
     private fun onMetrics(m: Metrics) {
         lastMetrics = m
+        hopTimes += Hop(m.tuneUs, m.captureUs, m.dspUs)
+        while (hopTimes.size > HOP_HISTORY) hopTimes.removeAt(0)
         val floor = m.floorBin
         if (floor == null) floorByLo.remove(m.loKhz) else floorByLo[m.loKhz] = floor
         val t = now()
@@ -154,6 +198,7 @@ class Store(
             st.loKhz = m.loKhz
             st.updated = t
             st.rssi.push(t, c.rssi.toFloat())
+            st.clipped.push(t, if (c.has(ChannelFlag.SATURATED)) 1f else 0f)
             c.rssiEma?.let { st.ema.push(t, it.toFloat()) }
             c.floor?.let { st.floor.push(t, it.toFloat()) }
         }
@@ -186,6 +231,13 @@ class Store(
     companion object {
         private const val AVG_ALPHA = 0.05
         private const val SEGMENT_TIMEOUT_S = 3.0
+        /** The web keeps 400 hops and draws the last 300 of them. */
+        const val HOP_HISTORY = 400
+        /** The web's console ring, and its per-line text cap. */
+        const val LOG_MAX = 500
+        private const val LOG_TEXT_MAX = 300
+        /** What the console shows: the web renders the same tail of the ring. */
+        const val LOG_SHOWN = 200
     }
 }
 

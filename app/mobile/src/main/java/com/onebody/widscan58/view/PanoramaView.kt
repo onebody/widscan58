@@ -270,8 +270,9 @@ class PanoramaView @JvmOverloads constructor(context: Context, attrs: AttributeS
         top: Float,
         bottom: Float,
     ) {
-        // A row is 2 dp tall: one pixel each would need five minutes of history to look full.
-        rowPx = max(1f, theme.dp(2f))
+        // One device pixel per rotation, as on the web: the band then holds minutes of
+        // history rather than seconds, and the rows older than that are the ramp's floor.
+        rowPx = 1f
         val capacity = ((bottom - top) / rowPx).roundToInt().coerceIn(1, MAX_WATERFALL_ROWS)
         val added = waterfall.capture(store, comp, y0, capacity)
         val width = waterfall.rowWidth
@@ -293,12 +294,25 @@ class PanoramaView @JvmOverloads constructor(context: Context, attrs: AttributeS
         axisLabel.color = theme.muted
         axisLabel.textAlign = Paint.Align.RIGHT
         val now = store.now()
-        for (y in listOf(0, capacity / 2, capacity - 1)) {
+        val fm = axisLabel.fontMetrics
+        val middle = (fm.ascent + fm.descent) / 2f
+        val lineHeight = (fm.descent - fm.ascent).roundToInt()
+        // The web's three age ticks, but keyed to the rows that exist: a band still
+        // filling from the top would otherwise have no second label for minutes.
+        val depth = waterfall.rowTimes.size
+        var lastBaseline = Float.NEGATIVE_INFINITY
+        for (y in listOf(0, depth / 2, depth - 1)) {
             val at = waterfall.rowTimes.getOrNull(y) ?: continue
+            // Rows are a pixel tall, so each label has to sit on its row's own centre line.
+            val baseline = (top + (y + 0.5f) * rowPx - middle).coerceIn(top - fm.ascent, bottom - fm.descent)
+            // Two ticks closer than a line of text would print over each other; the
+            // middle and oldest join as the band fills.
+            if (baseline - lastBaseline < lineHeight) continue
+            lastBaseline = baseline
             canvas.drawText(
                 context.getString(R.string.waterfall_age, now - at),
                 left - theme.dp(4f),
-                min(top + y * rowPx + theme.dp(8f), bottom),
+                baseline,
                 axisLabel,
             )
         }
@@ -336,7 +350,7 @@ class PanoramaView @JvmOverloads constructor(context: Context, attrs: AttributeS
     private val longPress = Runnable {
         if (isPlotHit(downX, downY)) {
             longFired = true
-            fitRange()?.let { (lo, hi) -> onFit(lo, hi) }
+            autoScale()
         }
     }
 
@@ -383,6 +397,11 @@ class PanoramaView @JvmOverloads constructor(context: Context, attrs: AttributeS
         selected = best
         onPick(best)
         invalidate()
+    }
+
+    /** The web UI's Auto scale button, for the menu: the long press is the same action. */
+    fun autoScale() {
+        fitRange()?.let { (lo, hi) -> onFit(lo, hi) }
     }
 
     /** The web UI's Auto scale: five dB of padding, rounded to the next 5 dB. */

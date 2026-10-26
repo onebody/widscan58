@@ -149,6 +149,7 @@ class StoreTest {
         val codec = object : ReplyCodec {
             override fun profile(json: String): Profile? = if (json.contains("narrow")) profileOf(channel(0)) else null
             override fun status(json: String): Status? = if (json.contains("narrow")) statusOf(5_658_000) else null
+            override fun gpio(json: String): List<GpioPin>? = if (json.contains("narrow")) parseGpio(1, "-", "L") else null
         }
         val s = store(codec)
         s.ingest(StreamItem.Text("INFO widscan58|c5-race|1|0.9.0|2026-10-19|1"))
@@ -159,8 +160,45 @@ class StoreTest {
         assertEquals(1, s.channels.size)
         s.ingest(StreamItem.Text("STATUS {\"name\":\"narrow\"}"))
         assertNotNull(s.status)
+        s.ingest(StreamItem.Text("GPIO {\"name\":\"narrow\"}"))
+        assertEquals(GpioSetting.LOW, s.gpio.single().saved)
         s.ingest(StreamItem.Text("PROFILE {\"name\":\"other\"}"))
         assertEquals("an undecodable reply leaves the state alone", 1, s.channels.size)
+    }
+
+    @Test
+    fun `the console ring keeps what the link said`() {
+        val s = store()
+        s.addLog(LogDir.TX, "GAIN MANUAL 45")
+        s.ingest(StreamItem.Text("OK"))
+        s.ingest(StreamItem.Text("ERR rh_mode"))
+        s.ingest(frame(FrameType.LOG, "REGDIFF t=1234 lo=5658000".toByteArray()))
+        assertEquals(
+            listOf("> GAIN MANUAL 45", "< OK", "< ERR rh_mode", "< REGDIFF t=1234 lo=5658000"),
+            s.log.map { it.dir.arrow + " " + it.text },
+        )
+        assertEquals(listOf(LogDir.TX, LogDir.RX, LogDir.ERROR, LogDir.INFO), s.log.map { it.dir })
+    }
+
+    @Test
+    fun `an undecodable reply is an error line as well as a dropped state`() {
+        val s = store()
+        s.ingest(StreamItem.Text("PROFILE {\"name\":\"x\"}"))
+        assertEquals(
+            listOf("bad PROFILE reply; ignored", "PROFILE {\"name\":\"x\"}"),
+            s.log.map { it.text },
+        )
+        assertEquals(listOf(LogDir.ERROR, LogDir.RX), s.log.map { it.dir })
+    }
+
+    @Test
+    fun `the console ring drops its oldest line and caps one line's text`() {
+        val s = store()
+        for (j in 0 until Store.LOG_MAX + 20) s.addLog(LogDir.RX, "line $j")
+        assertEquals(Store.LOG_MAX, s.log.size)
+        assertEquals("line 20", s.log.first().text)
+        s.addLog(LogDir.RX, "x".repeat(320))
+        assertEquals("a long reply is cut with the web's ellipsis", 302, s.log.last().text.length)
     }
 
     @Test
@@ -175,5 +213,36 @@ class StoreTest {
         s.clear()
         assertEquals(0, s.size)
         assertNull(Series(2).newest())
+    }
+
+    @Test
+    fun `a window walk skips what fell off the left edge`() {
+        val s = Series(8)
+        for (j in 0 until 8) s.push(j.toDouble(), j.toFloat())
+        val seen = ArrayList<Double>()
+        // now=7 and a 3 s span reaches back to 4.0 inclusive.
+        s.forEachWithin(7.0, 3.0) { t, _ -> seen += t }
+        assertEquals(listOf(4.0, 5.0, 6.0, 7.0), seen)
+
+        val wrapped = ArrayList<Float>()
+        for (j in 8 until 12) s.push(j.toDouble(), j.toFloat())
+        s.forEachWithin(11.0, 2.5) { _, v -> wrapped += v }
+        assertEquals(listOf(9f, 10f, 11f), wrapped)
+
+        val boundary = ArrayList<Double>()
+        s.forEachWithin(11.0, 0.0) { t, _ -> boundary += t }
+        assertEquals("a zero span still keeps the sample taken now", listOf(11.0), boundary)
+
+        val past = ArrayList<Double>()
+        s.forEachWithin(12.0, 0.5) { t, _ -> past += t }
+        assertEquals(emptyList<Double>(), past)
+    }
+
+    @Test
+    fun `the history ring holds the widest span the UI offers`() {
+        val s = Store(clock)
+        s.setProfile(profileOf(channel(0)))
+        // 250 samples per second, so a 120 s window needs 120 * 250 slots before it wraps.
+        assertEquals(120 * 250, s.channels[0].rssi.capacity)
     }
 }
