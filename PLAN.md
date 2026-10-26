@@ -219,8 +219,9 @@ const char *radio_phy_version(void);
 esp-sdr sequence: NVS → `esp_wifi_init` → `WIFI_MODE_NULL` → start → promiscuous
 on → `radio_init()` (prepare RX). Logging is muted and debug text goes out as
 framed `LOG` messages. Since 2026-10-10 the device then waits silently in
-RotorHazard mode (no `READY` line); hosts switch it with `PROTOCOL MONITOR`
-(see "RotorHazard mode" in the Status log).
+lap timer mode, on RotorHazard's node protocol (no `READY` line); hosts switch
+it with `PROTOCOL MONITOR` (see "RotorHazard mode" in the Status log; the mode
+was renamed lap timer mode on 2026-10-25).
 
 ### 4.3 LO planner (profile-driven)
 
@@ -362,8 +363,9 @@ v1: event detection and per-channel deltas in the UI (from METRICS). The firmwar
 ### 4.9 Wire protocol (v1)
 
 Host → device: ASCII lines; each replies `OK …` or `ERR <reason>`. This is
-monitor mode; `PROTOCOL RH|MONITOR` switches between it and RotorHazard's binary
-node protocol (`firmware/src/proto/rh.c`), which the device boots in.
+monitor mode; `PROTOCOL RH|MONITOR` switches between it and lap timer mode,
+which speaks RotorHazard's binary node protocol (`firmware/src/proto/rh.c`) and
+which the device boots in.
 
 | Command | Purpose |
 |---|---|
@@ -1178,6 +1180,43 @@ users don't have one).
 - Now skipped while `radio_tune` runs channel setup (`--wrap` of `ets_delay_us` and `phy_wifi_set_tx_gain_new`, gated by a flag): the 300 µs wait and the TX gain table. `c5_cal_restore` no longer rebuilds the gain table itself, since channel setup does (that was a duplicate ~160 µs per hop in `CACHE` mode). Full-spectrum comparison against the stock sequence at five LOs: floor within 0.07 dB, no new lines, same DC.
 - What remains in channel setup (~560 µs) is mostly the gain-table rebuild (~170 µs) and I2C register traffic. Further cuts would mean a PLL-only retune like the S3's (`phy_set_rf_freq_offset`), which skips the per-frequency settings that channel setup applies (band, pbus memory, RX compensation, the 5831 MHz filter change), so it needs care. (Done 2026-10-13: "PLL-only retune on the C5" above.)
 
+**Tune time on the C5, remeasured (2026-10-23): ~230 µs per hop, two-thirds of it analog I2C and fixed delays.** Temporary instrumentation (not kept): cycle counts around each step of `tune_locked`/`pll_retune`, and `--wrap` timing of `ets_delay_us` and the cross-object PHY calls (I2C, `phy_ckgen_5g_cal`, the `phy_chip_set_chan` callees). Calls inside `phy_rfpll.o` and through `phy_chip_i2c_writeReg.constprop` can't be wrapped. R1–R8 `GROUP`, gain 45, 3 s per setup. The instrumented PLL-only tune read 231–234 µs, 225 µs on the clean build. Wrapping `phy_write_gain_mem` adds ~0.35 µs per write, so the gain-table numbers below come from a pass without that wrap.
+- Settle: the capture's wait for `SETTLE` (100 µs) averages 0.9 µs (the timer call), at `FFT 64` (DSP ~237 µs) as at `METRICS FULL`. The settle is fully hidden behind the DSP. The tune itself is not overlapped: it runs between the capture and the DSP, and all of it is CPU busy-waiting (I2C polling, `ets_delay_us`). At `FFT 64` the hop is tune 225 + capture 24 + DSP ~237 µs, so the tune is ~46 % of it.
+- PLL-only retune (`TUNESKIP 3`), per hop:
+
+  | Step | µs | Inside it |
+  |---|---:|---|
+  | `phy_set_channel_rfpll_freq_new` | 160–165 | 2 × `ets_delay_us(20)` (PLL calibration waits, always exactly 2: no VCO retries seen), plus 5, 5, 2, 1 µs delays: 54 µs. I2C: 5 writes (1.75 µs each), 5 reads (1.83), 13 masked writes (3.6, read-modify-write): ~65 µs. `phy_ckgen_5g_cal` 26 µs (I2C through an unwrapped local helper). The rest, ~15–20 µs, is CPU. Inclusive sub-calls: `phy_set_freq_i2c_new` 17, `phy_freq_mem_change_5g_` 10.5, `phy_band_change` 4.5 |
+  | gain table replay | 33 | 84 `phy_write_gain_mem` at 0.35 µs: 29.7 µs; then `phy_agc_max_gain_set` |
+  | `phy_set_pbus_mem` | 13.6 | |
+  | `phy_xtal_duty_set` | 7 | 1 write + 1 masked write (5.4 µs) |
+  | `phy_rfpll_set_adc_rate` | 5.5–7 | |
+  | `adc_path_set` | 3.2 | |
+  | cal cache restore | 2.1 | |
+  | `gain_apply`, PHY lock | 0.7, 0.8 | |
+  | RX path re-apply (only with `TUNESKIP 1`) | 22 | 4 delays (6.5 µs) |
+
+  So the PLL-only retune is bounded by the analog I2C bus (~90 µs with ckgen's) and fixed delays (~54 µs). Both are inside libphy. The CPU part we control (gain replay aside) is ~25 µs.
+- Full channel setup (`phy_set_chanfreq`; every 2 s, and with `TUNESKIP 0` every hop): 441 µs when it runs every hop (`TUNESKIP 0`, code cached), 520–630 µs as the 2 s full tune. It runs from flash, and by its next turn its code is evicted from the cache. Total tune with RX path and gain: 473 µs vs 575–710 µs. Inside it, inclusive: `phy_set_rx_gain_table` ~160 µs warm, ~220–235 cold (the 84 gain-memory writes, ~30 µs, included); `phy_freq_i2c_data_write` 40–51; delays 73 (2 × 20 µs PLL calibration, 12 others); wrapped I2C 81 (6 writes, 11 reads, 14 masked writes); `phy_ckgen_5g_cal` 26; `phy_rx_pkdet_dc_cal` 12–35; `phy_set_pbus_mem` 13.5; `phy_force_txrx_off_new` ×2 7.6; `phy_cfg_tx_magtrk` 3–15; `phy_tsens_temp_read` 3–9; `phy_xtal_duty_set` 7. Then the RX path re-apply: 22 µs warm, 40–60 cold. Compared with 2026-10-08 (~560 µs), the same picture: the gain-table rebuild and I2C.
+- Outliers: one full tune in ~3800 took 6.2 ms, all of it in a single I2C write (5.4 ms), presumably an interrupt or another task. PLL-only tunes peak at ~300–350 µs.
+
+**RSSI smoothing and the FFT-only capture (2026-10-23).** `FFT` now sets the capture to 4 × the FFT size and 4 Welch segments in monitor mode too (as RotorHazard mode always did); the web UI's Scanner controls only offer the FFT size, 64–1024. With that the rotation rate runs ~60 /s (`FFT 1024`) to ~340–460 /s (`FFT 64`), and the `METRICS FULL` EMAs were a weight per update (RSSI α 0.25, clear floor α 0.02): 58 ms and 0.83 s at 60 /s, but 9.5 ms and 0.14 s at 364 /s, while the raw RSSI is noisier there. Empty channels, R1–R8 `GROUP`, gain 45, scatter of the per-update values over 4 s:
+
+  | FFT | Rotations/s | Raw RSSI sd | Smoothed, old α 0.25 | Smoothed, τ 100 ms |
+  |---|---:|---:|---:|---:|
+  | 1024 | 60 | 0.28–0.40 dB | 0.11–0.24 dB | 0.09–0.32 dB |
+  | 256 | 182–185 | 0.55–0.68 | 0.21–0.30 | 0.13–0.29 |
+  | 64 | 341–364 | 1.06–1.32 | 0.40–0.52 | 0.12–0.24 |
+
+  (R3, Wi-Fi channel 149, left out: 1.1–1.6 dB raw, bursty.) Now both are time constants (`EMA <rssi_ms> <clear_ms>`, `smooth_channel` in `scanner.c`): RSSI 100 ms, which follows a pass (90 % of a step in ~0.23 s) and gives the same ~0.1–0.3 dB at every FFT size; what is left is the slow wander of the floor, not per-update noise. The clear floor is 2 s, as a slow baseline of the empty channel that interference under the 6 dB signal threshold moves less (a judgement, not measured). RotorHazard mode and `METRICS RSSI|SNR` don't use either: their levels are coded per hop and filtered by `LEVELFILTER`. The time-averaged peak/center/OBW (`AVG`, 2^-shift per hop) is still a per-hop weight.
+
+**Are the periodic full tunes needed? (2026-10-23): no change in 10 minutes without them.** Temporary test build (not kept): a `TUNESKIP` bit 3 that stops the periodic full tune and the gain slots' 20 s expiry. A full tune still followed every calibration, including one after PHY tracking. A `GAINCHECK` command made each slot's next PLL-only hop build a fresh table (`phy_set_rx_gain_table`), compare it with the slot entry by entry (and the AGC max gain, `phy_param+292..294`), then replay the slot again, so a check refreshed nothing. R1–R8 `GROUP` (4 LOs), gain 45, `METRICS FULL` at 4 × 1024, `RECALMODE CACHE`, the board's own antenna, no VTX. Sequence: 60 s normal, 600 s without full tunes (a check every 60 s), 20 s with `TUNESKIP 0` (full tune every hop), 60 s normal.
+- Gain tables: all 4 LOs matched a fresh build bit for bit at every check, up to 550–608 s old. 0 of 84 entries differed, AGC max 77,77,83 throughout. PHY temperature (`phy_param[0]`) 50–52 against 50 at the last calibration. Tracking never recalibrated (the threshold is a 30-unit difference): its DC count stayed at its 3 boot runs.
+- Levels (1 s means, dBFS): the last minute without full tunes vs the normal phase after it (20–60 s in, all tables rebuilt): RSSI and floor within ±0.12 dB on every channel. The run-to-run spread of the 1 s means is 0.07–0.3 dB. Over the 10 minutes the per-minute floor wandered by ≤0.35 dB with no trend, as much as between the normal phases 11 minutes apart. The `TUNESKIP 0` phase read +0.27 (R1/R2) and −0.30 dB (R5–R8) off both PLL-only phases. A 20 s dry run showed the same offset, so it is the full vs PLL-only difference noted 2026-10-13 (0.1–0.3 dB), not staleness.
+- Why: the table build (`phy_set_rx_gain_table` → `phy_gen_rx_gain_table`, `phy_wr_rx_gain_mem`) reads the band (`phy_param+42`), the LO's frequency index and the DC/calibration areas (+0x138…+0x390). It calls no temperature read, and no load from `phy_param+0` (the temperature) was seen in a quick look at its disassembly. So the table should only change when the calibration changes, and every calibration already invalidates the slots (`cal_gen`) and makes the next tune a full one.
+- Not covered: a large temperature change (one that makes tracking recalibrate: that path was tested 2026-10-10, forced every second), Wi-Fi driver activity, and the other per-LO settings the full tune applies (packet-detect DC cal, DC memory clear, AGC). The levels showed nothing from those over 10 minutes.
+- Done: the C5 runs a full tune only after a fresh calibration (ours, or after PHY tracking's) and on the first tune. Gone: the 2 s interval, handing the full tunes to the plan's LOs in turn (`radio_set_plan`, also dropped from the S3 and the scanner) and the slots' 20 s expiry: a slot is valid until `cal_gen` changes. LOs without a slot build their own table on their first PLL-only tune, as before. The S3 keeps its 200 ms full tune (not measured there).
+
 **Peak, center and occupied BW are time-averaged (2026-10-08).**
 - With a VTX on R1 (SNR ~42 dB), the per-snapshot values scattered: peak sd 1.3 MHz, centroid sd 0.84 MHz, −10 dB width mostly 0.2–1.1 MHz. Recomputing them in Python from raw captures gave the same numbers, so the arithmetic was right; the definitions were the problem. A capture is 51 µs, less than one 64 µs line, and the carrier sat at about +1.5 MHz (picture level) with ~5 µs dips to −3.5 MHz (sync) every line, so each snapshot saw one or two of those.
 - Now (see §4.5): most occupied frequency +1.42 MHz (sd 0.02), center −0.05 MHz (sd 0.07), 99 % band −4.26 … +4.73 MHz (8.98 MHz, sd 0.09). Channels without a signal report no center. Cost ~70 µs per hop (metrics 0.33 → 0.40 ms, independent of the weight) and ~4 KB static RAM. Those numbers are at weight 1/32; the default is now 1/128 (`AVG 7`).
@@ -1213,6 +1252,21 @@ Next steps, in order:
 8. **Bad first calibration after boot on the C5.** In 4 of 8 reboots the first calibration of LO 5677 left ~20 dB image rejection (mostly an I/Q gain error, Q ≈ 1.2 × I); `RECAL` always fixed it (37–40 dB). `CACHE` keeps a bad entry until `RECAL` or a tracking recalibration. `IQCORR` hides it from the scanner, but `RAWIQ` still shows it, and it may be related to the bursts of raised floor seen in the first ~20 calibrations of a session under `ONCE` ("Calibration on the C5"). Find out whether it is the first calibration after boot or the first per LO (log the IQ words at +222 per calibration), then fix it (e.g. a throw-away calibration in `radio_init`, or recalibrate when the IQ words are implausible).
 9. **IQ correction cost.** `IQCORR` adds ~0.17 ms per hop at 1024 points (3 multiplies per sample for the moments in pass 1, 2 in pass 2). Once a hop's estimate has settled, the moments could be updated on every Nth capture only, leaving just the pass-2 multiplies. ~~Per-segment soft-float setup~~ (done 2026-10-13: IQ coefficients once per capture, integer means; see "Per-segment setup in `psd_compute`" above).
 10. **Revisit the IQ part of the PHY calibration.** With `IQCORR`, per-LO IQ calibration (a transmitted loopback tone each time) matters less. Options measured with the VTX: IQ once at the band center then DC-only per LO matched per-LO IQ; startup IQ only (esp-sdr's policy) gave ~20 dB, which `IQCORR` should now fix up as well (untested). Either would also shrink cache entries to the DC tables.
+
+**"RotorHazard mode" renamed lap timer mode (2026-10-25).** As a courtesy to the
+RotorHazard developers: our feature is a lap timer that also works as a
+RotorHazard node, not a copy of their project, so it no longer carries their
+name. The web UI's menu says "Lap timer mode", the seats card "Timer seats",
+and the Receiver card says the device is also a RotorHazard node (linked) that
+supports up to 8 seats in a full lap timer. The web code went from `RhModel`,
+`views/rh.ts` etc. to `TimerModel`, `views/timer.ts`, `uiMode: "timer"`; the
+settings and thresholds saved under the old names are not carried over. In
+the firmware the `CONFIG SAVE` defaults moved from NVS blob `rh` (version 3)
+to blob `timer`, restarting at version 1 (`timer_saved_t`); an old `rh` blob is
+ignored, so a board boots with the built-in defaults until the next save. The
+protocol keeps its name where it is RotorHazard's: `PROTOCOL RH`,
+`proto/rh.ts`, `RhLink`, `firmware/src/proto/rh.c`.
+The entries above keep the old name.
 
 ## 7. Risks and open questions
 

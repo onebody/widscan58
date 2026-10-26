@@ -1,18 +1,18 @@
-// RotorHazard mode page: seat levels and thresholds, a level graph, the
+// Lap timer mode page: seat levels and thresholds, a level graph, the
 // detection events, and the receiver settings this mode allows.
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
 import type { FastestRun } from "../model/laps";
-import { RH_SEATS, type RhSeat } from "../model/rh";
-import { levelDb, type RhMetric } from "../proto/rh";
+import { TIMER_SEATS, type TimerSeat } from "../model/timer";
+import { levelDb, type LevelMetric } from "../proto/rh";
 import { getLang, t as tr } from "../i18n";
 import { axes, channelColor, drawGrid, el, prepare, theme } from "../util/canvas";
 import { ChannelPlanDialog } from "./channelPlanDialog";
-import { RhEventsDialog } from "./rhEventsDialog";
+import { TimerEventsDialog } from "./timerEventsDialog";
 
-const fmtLevel = (v: number | null, m: RhMetric) =>
+const fmtLevel = (v: number | null, m: LevelMetric) =>
   v === null ? "—" : `${v} (${levelDb(v, m).toFixed(1)} ${m === "RSSI" ? "dBFS" : "dB"})`;
-const unit = (m: RhMetric) => (m === "RSSI" ? "dBFS" : "dB SNR");
+const unit = (m: LevelMetric) => (m === "RSSI" ? "dBFS" : "dB SNR");
 
 function segButtons<T extends string>(options: [T, string, string?][], onPick: (v: T) => void) {
   const wrap = el("span", { class: "seg" });
@@ -40,7 +40,7 @@ interface SeatTile {
   exit: HTMLInputElement;
 }
 
-export class RhSeats implements View {
+export class TimerSeats implements View {
   el: HTMLElement;
   private grid = el("div", { class: "tiles" });
   private status = el("span", { class: "muted" });
@@ -55,14 +55,14 @@ export class RhSeats implements View {
     edit.onclick = () =>
       dialog.open(app.deviceSettings.channels, (channels) => {
         app.updateDeviceSettings({ channels });
-        if (app.rh.running) void app.rh.writeSeats(channels);
+        if (app.timer.running) void app.timer.writeSeats(channels);
       });
-    for (let j = 0; j < RH_SEATS; j++) this.tiles.push(this.buildTile(j));
+    for (let j = 0; j < TIMER_SEATS; j++) this.tiles.push(this.buildTile(j));
     this.grid.append(...this.tiles.map((t) => t.root));
     this.el = el(
       "section",
       { class: "card span-12" },
-      el("h2", {}, "RotorHazard seats", this.status, el("span", { class: "tools" }, edit)),
+      el("h2", {}, "Timer seats", this.status, el("span", { class: "tools" }, edit)),
       this.grid,
     );
   }
@@ -72,8 +72,8 @@ export class RhSeats implements View {
     const num = () => el("input", { type: "number", min: "1", max: "254", step: "1", style: "width:58px" }) as HTMLInputElement;
     const enter = num();
     const exit = num();
-    enter.onchange = () => void app.rh.setThreshold(j, "enter", Number(enter.value));
-    exit.onchange = () => void app.rh.setThreshold(j, "exit", Number(exit.value));
+    enter.onchange = () => void app.timer.setThreshold(j, "enter", Number(enter.value));
+    exit.onchange = () => void app.timer.setThreshold(j, "exit", Number(exit.value));
     // "Now": the seat's average level over the last second, as RotorHazard's
     // capture buttons do (with the quad on the gate for EnterAt, away for ExitAt).
     const capture = (which: "enter" | "exit") => {
@@ -85,8 +85,8 @@ export class RhSeats implements View {
       );
       b.onclick = (e) => {
         e.stopPropagation();
-        const v = app.rh.recentLevel(j);
-        if (v !== null) void app.rh.setThreshold(j, which, v);
+        const v = app.timer.recentLevel(j);
+        if (v !== null) void app.timer.setThreshold(j, which, v);
       };
       this.captureTitles.push({ btn: b, which });
       return b;
@@ -95,12 +95,12 @@ export class RhSeats implements View {
     const enterMark = el("i", { class: "mark enter", title: "EnterAt" });
     const exitMark = el("i", { class: "mark exit", title: "ExitAt" });
     const t: SeatTile = {
-      root: el("div", { class: "tile rh-seat" }),
+      root: el("div", { class: "tile timer-seat" }),
       name: el("span"),
       freq: el("div", { class: "freq" }),
       pilot: el("div", { class: "pilot" }),
       big: el("div", { class: "big" }),
-      bar: el("div", { class: "bar rh-bar" }, fill, enterMark, exitMark),
+      bar: el("div", { class: "bar timer-bar" }, fill, enterMark, exitMark),
       fill,
       enterMark,
       exitMark,
@@ -116,8 +116,8 @@ export class RhSeats implements View {
       t.big,
       t.bar,
       t.kv,
-      el("div", { class: "rh-th" }, el("label", {}, "Enter"), enter, capture("enter")),
-      el("div", { class: "rh-th" }, el("label", {}, "Exit"), exit, capture("exit")),
+      el("div", { class: "timer-th" }, el("label", {}, "Enter"), enter, capture("enter")),
+      el("div", { class: "timer-th" }, el("label", {}, "Exit"), exit, capture("exit")),
     );
     t.root.onclick = () => {
       app.settings.selected = j;
@@ -127,8 +127,8 @@ export class RhSeats implements View {
   }
 
   render() {
-    const rh = this.app.rh;
-    const m = rh.metric;
+    const timer = this.app.timer;
+    const m = timer.metric;
     if (getLang() !== this.lang) {
       this.lang = getLang();
       for (const { btn, which } of this.captureTitles)
@@ -136,23 +136,23 @@ export class RhSeats implements View {
           which: which === "enter" ? "EnterAt" : "ExitAt",
         });
     }
-    const active = rh.seats.filter((s) => s.channel).length;
-    const hz = rh.seats.find((s) => s.channel && s.loopUs)?.loopUs;
+    const active = timer.seats.filter((s) => s.channel).length;
+    const hz = timer.seats.find((s) => s.channel && s.loopUs)?.loopUs;
     this.status.textContent = !this.app.device
       ? tr("not connected")
-      : rh.error
-        ? tr("error: {msg}", { msg: rh.error })
-        : !rh.running
+      : timer.error
+        ? tr("error: {msg}", { msg: timer.error })
+        : !timer.running
           ? tr("not polling")
           : tr(active === 1 ? "{n} seat on · poll cycle {ms} ms" : "{n} seats on · poll cycle {ms} ms", {
               n: active,
-              ms: rh.cycleMs.toFixed(0),
+              ms: timer.cycleMs.toFixed(0),
             }) +
             (hz ? ` · ${tr("{hz} updates/s per seat", { hz: (1e6 / hz).toFixed(0) })}` : "");
-    rh.seats.forEach((s, j) => this.renderTile(this.tiles[j], s, m));
+    timer.seats.forEach((s, j) => this.renderTile(this.tiles[j], s, m));
   }
 
-  private renderTile(t: SeatTile, s: RhSeat, m: RhMetric) {
+  private renderTile(t: SeatTile, s: TimerSeat, m: LevelMetric) {
     t.root.classList.toggle("disabled", !s.channel);
     t.root.classList.toggle("crossing", s.crossing);
     t.root.classList.toggle("selected", this.app.settings.selected === s.index);
@@ -172,7 +172,7 @@ export class RhSeats implements View {
     t.enterMark.style.left = pos(s.enter);
     t.exitMark.style.left = pos(s.exit);
     const f = s.laps.fastest;
-    const lr = this.app.rh.lapRules;
+    const lr = this.app.timer.lapRules;
     const rows: [string, string, string?][] = [
       [tr("laps"), `${s.laps.passes}`],
       [tr("last lap"), s.laps.lastLapS === null ? "—" : `${s.laps.lastLapS.toFixed(3)} s`],
@@ -191,7 +191,7 @@ export class RhSeats implements View {
 }
 
 /** Polled levels of the active seats, with the selected seat's thresholds and passes. */
-export class RhGraph implements View {
+export class TimerGraph implements View {
   el: HTMLElement;
   private canvas = el("canvas");
   private span = 30;
@@ -213,12 +213,12 @@ export class RhGraph implements View {
   }
 
   render() {
-    const rh = this.app.rh;
+    const timer = this.app.timer;
     const store = this.app.store;
     const s = prepare(this.canvas);
     const now = store.now();
-    const seats = rh.seats.filter((x) => x.channel);
-    const sel = rh.seats[this.app.settings.selected] ?? rh.seats[0];
+    const seats = timer.seats.filter((x) => x.channel);
+    const sel = timer.seats[this.app.settings.selected] ?? timer.seats[0];
     let lo = Infinity;
     let hi = -Infinity;
     for (const seat of seats)
@@ -279,7 +279,7 @@ export class RhGraph implements View {
     ctx.globalAlpha = 1;
     ctx.lineWidth = 1;
     // Passes: a marker at the top, in the seat's colour.
-    for (const e of rh.events) {
+    for (const e of timer.events) {
       if (e.kind !== "pass" || now - e.t > this.span) continue;
       const x = a.sx(e.t - now);
       ctx.fillStyle = channelColor(e.seat);
@@ -302,20 +302,20 @@ export class RhGraph implements View {
     ctx.font = "10px system-ui";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(tr(rh.metric === "RSSI" ? "level (dBFS = level / 4 − 63.75)" : "level (dB = level / 4)"), 2, 1);
+    ctx.fillText(tr(timer.metric === "RSSI" ? "level (dBFS = level / 4 − 63.75)" : "level (dB = level / 4)"), 2, 1);
   }
 }
 
 /** Crossings and passes, newest first. */
-export class RhEvents implements View {
+export class TimerEvents implements View {
   el: HTMLElement;
-  private list = el("div", { class: "rh-events" });
+  private list = el("div", { class: "timer-events" });
   private shown = "";
 
   constructor(private app: App) {
     const clear = el("button", { title: "Clear the events and lap counts" }, "Clear");
-    clear.onclick = () => app.rh.clearEvents();
-    const dialog = new RhEventsDialog(app);
+    clear.onclick = () => app.timer.clearEvents();
+    const dialog = new TimerEventsDialog(app);
     document.body.append(dialog.el);
     const gear = el("button", { class: "icon", title: "Options", "aria-label": "Options" });
     gear.innerHTML = GEAR_SVG;
@@ -329,18 +329,18 @@ export class RhEvents implements View {
   }
 
   render() {
-    const rh = this.app.rh;
-    const { rhShowCrossings, rhShowFastest } = this.app.settings;
-    const key = `${getLang()} ${rh.events.length} ${rhShowCrossings} ${rhShowFastest}`;
+    const timer = this.app.timer;
+    const { timerShowCrossings, timerShowFastest } = this.app.settings;
+    const key = `${getLang()} ${timer.events.length} ${timerShowCrossings} ${timerShowFastest}`;
     if (key === this.shown) return;
     this.shown = key;
     const t0 = performance.timeOrigin + this.app.store.t0;
     const rows: HTMLElement[] = [];
-    for (let j = rh.events.length - 1; j >= 0 && rows.length < 200; j--) {
-      const e = rh.events[j];
-      if ((e.kind === "enter" || e.kind === "exit") && !rhShowCrossings) continue;
-      if (e.kind === "fastest" && !rhShowFastest) continue;
-      const seat = rh.seats[e.seat];
+    for (let j = timer.events.length - 1; j >= 0 && rows.length < 200; j--) {
+      const e = timer.events[j];
+      if ((e.kind === "enter" || e.kind === "exit") && !timerShowCrossings) continue;
+      if (e.kind === "fastest" && !timerShowFastest) continue;
+      const seat = timer.seats[e.seat];
       const time = new Date(t0 + e.t * 1000).toLocaleTimeString([], { hour12: false }) + `.${String(Math.floor((e.t * 1000) % 1000)).padStart(3, "0")}`;
       let what: string;
       if (e.kind === "pass") {
@@ -362,7 +362,7 @@ export class RhEvents implements View {
       rows.push(
         el(
           "div",
-          { class: `rh-event ${e.kind}${e.ignoredS !== undefined ? " ignored" : ""}`, ...(e.fastest ? { title: lapList(e.fastest) } : {}) },
+          { class: `timer-event ${e.kind}${e.ignoredS !== undefined ? " ignored" : ""}`, ...(e.fastest ? { title: lapList(e.fastest) } : {}) },
           el("span", { class: "muted" }, time),
           el("span", {}, el("i", { class: "key", style: `background:${channelColor(e.seat)}` }), `${e.seat + 1} ${seat.channel ?? ""}`),
           el("span", {}, what),
@@ -373,8 +373,8 @@ export class RhEvents implements View {
   }
 }
 
-/** Receiver settings allowed in RotorHazard mode, and link statistics. */
-export class RhSettings implements View {
+/** Receiver settings allowed in lap timer mode, and link statistics. */
+export class TimerSettings implements View {
   el: HTMLElement;
   private body = el("div", { class: "controls" });
   private stats = el("div", { class: "muted" });
@@ -384,20 +384,21 @@ export class RhSettings implements View {
   private mode;
   private metric;
   private filter;
+  private lang = getLang();
 
   constructor(private app: App) {
-    const rh = app.rh;
+    const timer = app.timer;
     // The device captures 4 FFTs' worth of samples in this mode.
-    for (const v of [64, 128, 256, 512]) this.fft.append(new Option(`${v}-pt FFT (${4 * v} samples)`, String(v)));
-    this.fft.onchange = () => void rh.command(`FFT ${this.fft.value}`);
+    for (const v of [64, 128, 256, 512]) this.fft.append(this.fftOption(v));
+    this.fft.onchange = () => void timer.command(`FFT ${this.fft.value}`);
     this.gain.oninput = () => (this.gainVal.textContent = this.gain.value);
-    this.gain.onchange = () => void rh.command(`GAIN MANUAL ${this.gain.value}`);
-    this.metric = segButtons<RhMetric>([["RSSI", "RSSI"], ["SNR", "SNR"]], (m) => void rh.setMetric(m));
-    this.mode = segButtons([["GROUP", "Grouped"], ["SINGLE", "Per channel"]], (v) => void rh.command(`MODE ${v}`));
+    this.gain.onchange = () => void timer.command(`GAIN MANUAL ${this.gain.value}`);
+    this.metric = segButtons<LevelMetric>([["RSSI", "RSSI"], ["SNR", "SNR"]], (m) => void timer.setMetric(m));
+    this.mode = segButtons([["GROUP", "Grouped"], ["SINGLE", "Per channel"]], (v) => void timer.command(`MODE ${v}`));
     // The 255 ms running median (as RotorHazard's nodes), or a median of 3 and a ~2.7 ms average.
     this.filter = segButtons(
       [["MEDIAN", "Median", "255ms Median"], ["EMA", "EMA", "Exponential Moving Average"]],
-      (v) => void rh.command(`LEVELFILTER ${v}`),
+      (v) => void timer.command(`LEVELFILTER ${v}`),
     );
     const ctl = (label: string, ...children: Node[]) =>
       this.body.append(el("div", { class: "ctl" }, el("label", {}, label), el("div", { class: "row" }, ...children)));
@@ -408,23 +409,40 @@ export class RhSettings implements View {
     ctl("Output filter", this.filter.el);
     // RotorHazard's UI can't change these: the device applies its saved ones on every switch to this mode.
     const save = el("button", { title: "Save these settings as default" }, "Save");
-    save.onclick = () => void rh.saveDefaults();
+    save.onclick = () => void timer.saveDefaults();
     const reset = el("button", {}, "Reset");
-    reset.onclick = () => void rh.resetDefaults();
+    reset.onclick = () => void timer.resetDefaults();
     ctl("Save these settings as default", save, reset);
-    this.el = el("section", { class: "card span-12" }, el("h2", {}, "Receiver"), this.body, this.stats);
+    const info = el(
+      "div",
+      { class: "timer-info" },
+      "This device is also a ",
+      el("a", { href: "https://github.com/RotorHazard/RotorHazard", target: "_blank", rel: "noopener" }, "RotorHazard"),
+      " node and automatically supports up to 8 seats if plugged into a full lap timer.",
+    );
+    this.el = el("section", { class: "card span-12" }, el("h2", {}, "Receiver"), this.body, info, this.stats);
+  }
+
+  private fftOption(v: number) {
+    return new Option(tr("{n}-pt FFT ({m} samples)", { n: v, m: 4 * v }), String(v));
   }
 
   render() {
-    const rh = this.app.rh;
-    this.metric.sync(rh.metric);
-    const c = rh.config as { nfft?: number; gain?: number; gain_max?: number; mode?: string; level_filter?: string } | null;
+    const timer = this.app.timer;
+    if (getLang() !== this.lang) {
+      this.lang = getLang();
+      for (const o of this.fft.options) {
+        const n = Number(o.value);
+        o.textContent = tr("{n}-pt FFT ({m} samples)", { n, m: 4 * n });
+      }
+    }
+    this.metric.sync(timer.metric);
+    const c = timer.config as { nfft?: number; gain?: number; gain_max?: number; mode?: string; level_filter?: string } | null;
     if (c) {
       // Show whatever the device reports, also values outside the lists.
       const v = c.nfft;
       if (document.activeElement !== this.fft && v !== undefined) {
-        if (![...this.fft.options].some((o) => o.value === String(v)))
-          this.fft.append(new Option(`${v}-pt FFT (${4 * v} samples)`, String(v)));
+        if (![...this.fft.options].some((o) => o.value === String(v))) this.fft.append(this.fftOption(v));
         this.fft.value = String(v);
       }
       if (document.activeElement !== this.gain) {
