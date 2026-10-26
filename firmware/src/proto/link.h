@@ -10,9 +10,9 @@
 typedef enum { LINK_USB = 0, LINK_UART, LINK_COUNT } link_sink_t;
 
 void link_init(void);
-/* Create a sink's queue and writer task. link_init starts USB; uart_link.c
- * starts the UART once its driver is installed. */
-void link_sink_start(link_sink_t sink, size_t queue_bytes);
+/* Create the USB sink's queue and writer task; uart_link.c owns the UART's
+ * driver and writes straight to it. */
+void link_sink_start(size_t queue_bytes);
 /* Whether the sink was started (its transport is usable). */
 bool link_ready(link_sink_t sink);
 

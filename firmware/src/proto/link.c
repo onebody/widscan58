@@ -34,39 +34,43 @@ static RingbufHandle_t queues[LINK_COUNT];
 static volatile uint32_t drops;
 static volatile bool streaming; /* frames allowed (link_set_streaming); off at boot */
 
+/* Only the USB sink is queued: its driver drops bytes when no host reads the
+ * FIFO, so a writer task and a deep ring keep the scanners off that path. The
+ * UART writes straight to the driver (link_raw_to) — an item that would need a
+ * queue would also need heap the C5 does not have. */
 static void link_task(void *arg) {
-    link_sink_t sink = (link_sink_t)(intptr_t)arg;
+    (void)arg;
     for (;;) {
         size_t size;
-        uint8_t *item = xRingbufferReceive(queues[sink], &size, portMAX_DELAY);
+        uint8_t *item = xRingbufferReceive(queues[LINK_USB], &size, portMAX_DELAY);
         if (!item) continue;
         size_t done = 0;
         while (done < size) {
             size_t chunk = size - done > LINK_TX_CHUNK ? LINK_TX_CHUNK : size - done;
-            int n = sink == LINK_UART
-                        ? uart_link_write(item + done, chunk)
-                        : usb_serial_jtag_write_bytes(item + done, chunk, pdMS_TO_TICKS(LINK_WRITE_TIMEOUT_MS));
+            int n = usb_serial_jtag_write_bytes(item + done, chunk, pdMS_TO_TICKS(LINK_WRITE_TIMEOUT_MS));
             if (n <= 0) break;
             done += (size_t)n;
         }
         if (done < size) drops++;
-        vRingbufferReturnItem(queues[sink], item);
+        vRingbufferReturnItem(queues[LINK_USB], item);
     }
 }
 
-void link_sink_start(link_sink_t sink, size_t queue_bytes) {
-    queues[sink] = xRingbufferCreate(queue_bytes, RINGBUF_TYPE_NOSPLIT);
-    if (!queues[sink]) return;
-    xTaskCreatePinnedToCore(link_task, sink == LINK_UART ? "uart" : "link", 4096, (void *)(intptr_t)sink, 5, NULL,
-                            portNUM_PROCESSORS - 1);
+void link_sink_start(size_t queue_bytes) {
+    queues[LINK_USB] = xRingbufferCreate(queue_bytes, RINGBUF_TYPE_NOSPLIT);
+    if (!queues[LINK_USB]) return;
+    xTaskCreatePinnedToCore(link_task, "link", 4096, NULL, 5, NULL, portNUM_PROCESSORS - 1);
 }
 
-bool link_ready(link_sink_t sink) { return (unsigned)sink < LINK_COUNT && queues[sink]; }
+bool link_ready(link_sink_t sink) {
+    if (sink == LINK_UART) return uart_link_ready();
+    return (unsigned)sink < LINK_COUNT && queues[sink];
+}
 
 void link_init(void) {
     usb_serial_jtag_driver_config_t cfg = {.tx_buffer_size = LINK_USB_TX_BYTES, .rx_buffer_size = 1024};
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&cfg));
-    link_sink_start(LINK_USB, LINK_QUEUE_BYTES);
+    link_sink_start(LINK_QUEUE_BYTES);
     uart_link_init(); /* no sink where the target has no UART link */
 }
 
@@ -112,6 +116,13 @@ bool link_frame_wait(uint8_t type, const void *a, size_t alen, const void *b, si
 }
 
 bool link_raw_to(link_sink_t sink, const void *data, size_t n) {
+    if (sink == LINK_UART) {
+        if (uart_link_write(data, n) != (int)n) {
+            drops++;
+            return false;
+        }
+        return true;
+    }
     if (!link_ready(sink) || xRingbufferSend(queues[sink], data, n, pdMS_TO_TICKS(LINK_QUEUE_TIMEOUT_MS)) != pdTRUE) {
         drops++;
         return false;
