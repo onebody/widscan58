@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Palette mirrors the web UI (repo/web/src/styles.css): dark is the default
+     look for a spectrum tool; the s1..s8 slots are the per-channel series. -->
+<resources>
+    <color name="page">#0d0d0d</color>
+    <color name="surface">#1a1a19</color>
+    <color name="surface2">#232321</color>
+    <color name="ink">#ffffff</color>
+    <color name="ink2">#c3c2b7</color>
+    <color name="muted">#898781</color>
+    <color name="grid">#2c2c2a</color>
+    <color name="axis">#383835</color>
+    <color name="accent">#3987e5</color>
+    <color name="s1">#3987e5</color>
+    <color name="s2">#d95926</color>
+    <color name="s3">#199e70</color>
+    <color name="s4">#c98500</color>
+    <color name="s5">#d55181</color>
+    <color name="s6">#008300</color>
+    <color name="s7">#9085e9</color>
+    <color name="s8">#e66767</color>
+    <color name="good">#0ca30c</color>
+    <color name="warning">#fab219</color>
+    <color name="serious">#ec835a</color>
+    <color name="critical">#d03b3b</color>
+    <color name="seq0">#1a1a19</color>
+    <color name="seq1">#0d366b</color>
+    <color name="seq2">#184f95</color>
+    <color name="seq3">#256abf</color>
+    <color name="seq4">#3987e5</color>
+    <color name="seq5">#6da7ec</color>
+    <color name="seq6">#b7d3f6</color>
+</resources>

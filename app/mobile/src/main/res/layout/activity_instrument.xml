@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Handheld layout: status, one-tap bands, panorama + waterfall, channel tiles,
+     run/gain/holds bar. The buttons pin their own capitalisation because the
+     vendor DeviceDefault themes disagree: AOSP renders "Stop", MIUI "STOP".
+     GPL-3.0-or-later. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="6dp"
+        android:paddingTop="2dp"
+        android:paddingEnd="6dp"
+        android:textColor="@color/muted"
+        android:textSize="11sp" />
+
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/bands"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal" />
+    </HorizontalScrollView>
+
+    <com.onebody.widscan58.view.PanoramaView
+        android:id="@+id/panorama"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="4dp"
+        android:layout_weight="1"
+        android:minHeight="170dp" />
+
+    <GridLayout
+        android:id="@+id/tiles"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:columnCount="4">
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile0"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile1"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile2"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile3"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile4"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile5"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile6"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+
+        <com.onebody.widscan58.view.ChannelTileView
+            android:id="@+id/tile7"
+            android:layout_width="0dp"
+            android:layout_margin="2dp"
+            android:layout_height="162dp"
+            android:layout_columnWeight="1"
+            android:layout_gravity="fill_horizontal" />
+    </GridLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/scan"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="96dp"
+            android:textAllCaps="false" />
+
+        <TextView
+            android:id="@+id/gainValue"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minEms="2"
+            android:paddingStart="8dp"
+            android:paddingEnd="4dp"
+            android:textColor="@color/ink2"
+            android:textSize="12sp" />
+
+        <SeekBar
+            android:id="@+id/gain"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/holds"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/holds"
+            android:textAllCaps="false" />
+    </LinearLayout>
+</LinearLayout>
