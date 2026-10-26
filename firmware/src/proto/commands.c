@@ -667,7 +667,7 @@ static void commands_task(void *arg) {
         int64_t now = esp_timer_get_time();
         xSemaphoreTake(cmd_lock, portMAX_DELAY);
         if (n <= 0) {
-            if (p->probe) {
+            if (proto == PROTO_MONITOR && p->probe) {
                 p->probe = false;
                 set_proto(PROTO_RH);
                 rh_rx(sink, RH_REVISION_CODE, now);
@@ -717,8 +717,8 @@ void commands_task_start(void) {
     reply = malloc(REPLY_BYTES);
     if (reply) reply[0] = 0;
     ports = calloc(LINK_COUNT, sizeof(*ports));
-    if (!ports) return; /* without buffers there is no host protocol */
     cmd_lock = xSemaphoreCreateMutex();
+    if (!ports || !cmd_lock) return; /* without them there is no host protocol */
     /* Boot in RotorHazard mode (rh_init has run); monitor mode starts from the defaults. */
     scan_config_t c;
     scanner_get_config(&c);
