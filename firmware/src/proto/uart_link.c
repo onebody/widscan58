@@ -33,7 +33,7 @@ bool uart_link_init(void) {
     gpio_pullup_en(UART_LINK_RX);
     installed = true;
     link_sink_start(LINK_UART, UART_LINK_QUEUE_BYTES);
-    return true;
+    return link_ready(LINK_UART);
 }
 
 int uart_link_write(const void *data, size_t n) {
