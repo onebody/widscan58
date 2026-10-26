@@ -16,6 +16,7 @@
 #include "fft_eval.h"
 #include "rh.h"
 #include "scanner.h"
+#include "status_led.h"
 
 #define FLOOR_PERCENTILE 0.2f
 #define TELEMETRY_US 250000
@@ -304,6 +305,7 @@ static void do_levels(metrics_input_t *in, const psd_result_t *psd, const plan_h
     const int32_t spec_bin_q8 = (int32_t)lrintf((2.0f * scale_db + 255.0f) * 256.0f);
     const uint32_t floor_raw = snr ? metrics_floor_raw(in, FLOOR_PERCENTILE, sp->scratch) : 0;
     frame_level_t out[PLAN_MAX_PER_LO];
+    bool heard = false;
     for (unsigned j = 0; j < hop->nch; j++) {
         metrics_level_t m;
         metrics_level(in, floor_raw, hop->offset_hz[j], &m);
@@ -313,8 +315,12 @@ static void do_levels(metrics_input_t *in, const psd_result_t *psd, const plan_h
             if (llabs(d) <= c->rssi_hz) m.flags |= CHF_SPUR;
         }
         out[j] = (frame_level_t){.id = hop->ch[j], .flags = m.flags, .rssi = m.rssi, .snr = m.snr};
-        if (c->rh) rh_feed(hop->ch[j], cap_mid, snr ? m.snr : m.rssi);
+        heard |= (m.flags & CHF_SIGNAL) != 0;
+        /* RotorHazard mode: the server's own enter/exit levels say what a
+         * signal is (metrics RSSI has no floor to compare against). */
+        if (c->rh) heard |= rh_feed(hop->ch[j], cap_mid, snr ? m.snr : m.rssi);
     }
+    if (heard) status_led_signal();
     int64_t tm1 = esp_timer_get_time();
     int64_t t3 = finish_hop(psd, hop, t2, tm0, tm1);
     unsigned gain_index;
@@ -425,6 +431,7 @@ static IRAM_ATTR void do_hop(void) {
     metrics_floor_t fl;
     metrics_floor(&in, FLOOR_PERCENTILE, sp->scratch, &fl);
     frame_channel_t out[PLAN_MAX_PER_LO];
+    bool heard = false;
     for (unsigned j = 0; j < hop->nch; j++) {
         channel_state_t *st = &sp->ch[hop->ch[j]];
         metrics_channel_t m;
@@ -434,6 +441,7 @@ static IRAM_ATTR void do_hop(void) {
             float d = ((float)c->spurs_khz[k] - (float)hop->lo_khz) * 1000.0f - hop->offset_hz[j];
             if (fabsf(d) <= c->search_hz) m.flags |= CHF_SPUR;
         }
+        if (m.flags & CHF_SIGNAL) heard = true;
         smooth_channel(st, m.rssi, !(m.flags & CHF_SIGNAL), (uint32_t)t0, c);
         out[j] = (frame_channel_t){
             .id = hop->ch[j], .flags = m.flags,
@@ -448,6 +456,7 @@ static IRAM_ATTR void do_hop(void) {
         };
     }
     float dc = (psd.dc_i * psd.dc_i + psd.dc_q * psd.dc_q) / (RADIO_FULL_SCALE * RADIO_FULL_SCALE);
+    if (heard) status_led_signal();
     int64_t tm1 = esp_timer_get_time();
     int64_t t3 = finish_hop(&psd, hop, t2, tm0, tm1);
     unsigned gain_index;
@@ -501,7 +510,7 @@ static void do_rawiq(const scan_request_t *r) {
     radio_tune(r->lo_khz);
     const uint32_t *words;
     if (radio_capture(r->n, r->rate_code, c->settle_us, &words, NULL) != ESP_OK) {
-        link_text("ERR capture\n");
+        link_text_to(r->sink, "ERR capture\n");
         return;
     }
     /* Pack in place to signed 8-bit I, Q: the capture aperture is ours until
@@ -533,7 +542,7 @@ static void do_rawiq(const scan_request_t *r) {
         unsigned len = r->n - off < RAWIQ_CHUNK ? r->n - off : RAWIQ_CHUNK;
         h.offset = (uint16_t)off;
         if (!link_frame_wait(FRAME_RAWIQ, &h, sizeof(h), iq + 2 * off, 2u * len, 500)) {
-            link_text("ERR link_full\n");
+            link_text_to(r->sink, "ERR link_full\n");
             return;
         }
     }
@@ -547,7 +556,7 @@ static void do_fft_eval(const scan_request_t *r) {
     const float rate = radio_caps()->rates_hz[c->rate_code];
     const unsigned n = c->capture_samples;
     if (n > 8192) {
-        link_text("ERR ffteval_capn\n"); /* the evaluation uses the aperture above 8192 words */
+        link_text_to(r->sink, "ERR ffteval_capn\n"); /* the evaluation uses the aperture above 8192 words */
         return;
     }
     uint32_t *buf = radio_sample_buffer(NULL);
@@ -560,7 +569,7 @@ static void do_fft_eval(const scan_request_t *r) {
         } else {
             radio_tune(r->lo_khz);
             if (radio_capture(n, c->rate_code, c->settle_us, &words, NULL) != ESP_OK) {
-                link_text("ERR capture\n");
+                link_text_to(r->sink, "ERR capture\n");
                 return;
             }
         }
@@ -582,18 +591,19 @@ static void do_fft_eval(const scan_request_t *r) {
     psd_release_unused(); /* the evaluation loaded every implementation */
     for (unsigned t = 0; t < PSD_FFT_COUNT; t++) {
         if (acc[t].err != ESP_OK) {
-            link_printf("FFTEVAL %s %s ERR %s\n", r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE",
-                        psd_fft_name(acc[t].type), esp_err_to_name(acc[t].err));
+            link_printf_to(r->sink, "FFTEVAL %s %s ERR %s\n", r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE",
+                           psd_fft_name(acc[t].type), esp_err_to_name(acc[t].err));
             continue;
         }
-        link_printf("FFTEVAL %s %s tone %.2f floor %.2f spur %.2f sfdr %.2f rel %.3f dmean %.3f drms %.3f dmax %.2f fft_us %u psd_us %u\n",
-                    r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE", psd_fft_name(acc[t].type),
-                    (double)acc[t].tone_db, (double)acc[t].floor_db, (double)acc[t].spur_db,
-                    (double)(acc[t].tone_db - acc[t].spur_db), (double)acc[t].floor_rel_db,
-                    (double)acc[t].diff_mean_db, (double)acc[t].diff_rms_db, (double)acc[t].diff_max_db,
-                    (unsigned)acc[t].fft_us, (unsigned)acc[t].psd_us);
+        link_printf_to(r->sink,
+                       "FFTEVAL %s %s tone %.2f floor %.2f spur %.2f sfdr %.2f rel %.3f dmean %.3f drms %.3f dmax %.2f fft_us %u psd_us %u\n",
+                       r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE", psd_fft_name(acc[t].type),
+                       (double)acc[t].tone_db, (double)acc[t].floor_db, (double)acc[t].spur_db,
+                       (double)(acc[t].tone_db - acc[t].spur_db), (double)acc[t].floor_rel_db,
+                       (double)acc[t].diff_mean_db, (double)acc[t].diff_rms_db, (double)acc[t].diff_max_db,
+                       (unsigned)acc[t].fft_us, (unsigned)acc[t].psd_us);
     }
-    link_text("FFTEVAL END\n");
+    link_text_to(r->sink, "FFTEVAL END\n");
 }
 
 static void throttle_wake(void *arg) {
@@ -665,7 +675,7 @@ static void scanner_task(void *arg) {
             else if (req.type == SCAN_REQ_RECAL) {
                 radio_force_recal();
                 memset(sp->iq, 0, sizeof(sp->iq));
-                link_text("OK RECAL\n");
+                link_text_to(req.sink, "OK RECAL\n");
             }
         }
         int64_t now = esp_timer_get_time();

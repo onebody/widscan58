@@ -18,6 +18,7 @@
 #include "radio.h"
 #include "rh.h"
 #include "scanner.h"
+#include "status_led.h"
 
 /* Required by the stock RF test archive; no shell is exposed. */
 int cmd_parse(char *cmd, char *name, int *argc, char **argv) {
@@ -48,6 +49,20 @@ static void boot_failed(const char *what, esp_err_t err) {
     }
 }
 
+/* esp_wifi_start can leave a dual-band target on the 5 GHz band — the C5-Zero comes
+ * up 5G-only, channel 36 — and channel 1 is not a valid primary there, so the
+ * expected esp_wifi_set_channel(1, …) fails the boot. All this channel has to do is
+ * be one the band the driver chose accepts; the scanned frequency comes later from
+ * the PHY. Single-band targets keep channel 1. */
+static esp_err_t wifi_boot_channel(void) {
+    uint8_t chan = 1;
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    wifi_band_t band = WIFI_BAND_2G;
+    if (esp_wifi_get_band(&band) == ESP_OK && band == WIFI_BAND_5G) chan = 36;
+#endif
+    return esp_wifi_set_channel(chan, WIFI_SECOND_CHAN_NONE);
+}
+
 void app_main(void) {
 #if CONFIG_IDF_TARGET_ESP32C5
     /* C5 rev <= 1.0: startup gates UART0's clocks when it isn't the console,
@@ -71,6 +86,7 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(e);
     gpio_out_init(); /* the saved board outputs (e.g. an antenna switch), before the radio */
+    (void)status_led_init(); /* first for its heap; no LED or no memory is not fatal */
     link_init();
     BOOT_CHECK(esp_event_loop_create_default());
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -80,7 +96,7 @@ void app_main(void) {
     BOOT_CHECK(esp_wifi_start());
     BOOT_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     BOOT_CHECK(esp_wifi_set_promiscuous(true));
-    BOOT_CHECK(esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE));
+    BOOT_CHECK(wifi_boot_channel());
     BOOT_CHECK(radio_init());
     BOOT_CHECK(rh_init()); /* before the scanner can feed seats */
     BOOT_CHECK(scanner_init());

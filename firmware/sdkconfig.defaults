@@ -35,3 +35,11 @@ CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 # CONFIG_ESP_WIFI_SOFTAP_SUPPORT is not set
 # CONFIG_ESP_WIFI_ENABLE_WPA3_SAE is not set
 # CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA is not set
+
+# The status LED's RMT driver is not latency-critical (a WS2812 frame is 30 us
+# every blink period), and its ISR-in-IRAM placement costs ~3 KB of the C5's
+# nearly full scan-loop RAM. Keep the driver in flash: flash writes disable
+# interrupts, so the ISR cannot fire with the cache off.
+# CONFIG_RMT_ENCODER_FUNC_IN_IRAM is not set
+# CONFIG_RMT_TX_ISR_HANDLER_IN_IRAM is not set
+# CONFIG_RMT_RX_ISR_HANDLER_IN_IRAM is not set

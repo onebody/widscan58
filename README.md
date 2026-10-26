@@ -50,6 +50,9 @@ second.*
   constellation view, scanner settings and a command console.
 - **Channel editor:** pick your channels on a frequency chart that looks like
   the usual FPV band charts, or select a whole band with one click.
+- **Status LED:** the C5-Zero's onboard RGB LED lights up green the first time
+  the scanner hears a signal, then blinks while the signal stays, so you can
+  tell the board is working with no browser attached.
 
 ![The channel editor: Raceband selected on a 5.6–5.95 GHz frequency chart](images/channel-editor.png)
 
@@ -57,8 +60,16 @@ second.*
 
 Widscan58 runs on the **ESP32-C5**, Espressif's dual-band (2.4 + 5 GHz) Wi-Fi
 chip. It is developed and tested on the
-[Seeed Studio XIAO ESP32-C5](https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/).
-Other ESP32-C5 boards work too, such as the C5 devkit.
+[Seeed Studio XIAO ESP32-C5](https://wiki.seeedstudio.com/xiao_esp32c5_getting_started/)
+and the Waveshare ESP32-C5-Zero. Other ESP32-C5 boards work too, such as the C5
+devkit.
+
+On the C5-Zero the onboard WS2812 on GP27 is a status LED: dark at boot, solid
+green for a second when a signal is first heard, blinking while it stays, and
+dark again two seconds after the last signal. GP27 is reserved (it shows as `x`
+in `GPIO?`) so the GPIO command cannot take it over. The XIAO also has GP27
+wired to its plain yellow LED; it follows the same pattern (lit instead of
+green).
 
 > The firmware also builds for the ESP32-S3, but the S3 has no 5 GHz radio. It
 > runs a scaled-down mock-up of the band at 2.4 GHz and is only used for
@@ -69,7 +80,8 @@ Other ESP32-C5 boards work too, such as the C5 devkit.
 1. Plug the ESP32-C5 into your computer or Android phone over USB.
 2. Open the [web UI](https://capnbry.github.io/widscan58/) in Chrome, Edge or
    Firefox on desktop, or Chrome on Android.
-3. Click **Flash device** and follow the steps to install the firmware.
+3. Click **Flash device** and follow the steps to install the firmware; pick a
+   firmware version if the page offers more than one.
 4. Click **Connect device** and pick the board. Chrome remembers it, so next time
    it reconnects by itself.
 

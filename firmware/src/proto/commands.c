@@ -26,6 +26,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "nvs.h"
 #include "commands.h"
 #include "frames.h"
@@ -46,6 +47,27 @@ static char *reply; /* heap: static SRAM goes to hot code in IRAM on the C5 */
 static size_t reply_len;
 static bool reply_overflow;
 
+/* The port whose command is being handled; cmd_lock serializes the two reader
+ * tasks, so reply_sink, the reply buffer and the protocol state have one
+ * owner at a time. */
+static SemaphoreHandle_t cmd_lock;
+static link_sink_t reply_sink;
+/* The UART's last byte: while it is recent the radio belongs to RotorHazard
+ * and USB's PROTOCOL MONITOR is refused. */
+#define UART_HOLD_US 2000000
+static int64_t last_uart_rx = -UART_HOLD_US;
+
+static bool reply_text(const char *text) { return link_text_to(reply_sink, text); }
+static bool reply_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static bool reply_printf(const char *fmt, ...) {
+    char buffer[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, ap);
+    va_end(ap);
+    return reply_text(buffer);
+}
+
 static void reply_add(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void reply_add(const char *fmt, ...) {
     if (!reply) reply_overflow = true;
@@ -59,7 +81,7 @@ static void reply_add(const char *fmt, ...) {
 }
 
 static void reply_send(void) {
-    link_text(reply_overflow ? "ERR reply_length\n" : reply);
+    reply_text(reply_overflow ? "ERR reply_length\n" : reply);
     reply_len = 0;
     reply_overflow = false;
     if (reply) reply[0] = 0;
@@ -323,9 +345,10 @@ static bool parse_channels(char *args, const profile_t *p, scan_config_t *c) {
     return true;
 }
 
-static void handle(char *line) {
+static void handle(char *line, link_sink_t sink) {
+    reply_sink = sink;
     if (proto == PROTO_RH && !rh_allowed(line)) {
-        link_text("ERR rh_mode\n");
+        reply_text("ERR rh_mode\n");
         return;
     }
     scan_config_t c;
@@ -340,7 +363,7 @@ static void handle(char *line) {
          * web UI compares it with the build it offers to flash. Then HEAD's
          * commit time and the PHY library's version. Fields are separated by
          * '|', which none of them contains (the PHY version has spaces). */
-        link_printf("INFO widscan58|%s|%d|%s|%s|%s\n", radio_caps()->target, PROTO_VERSION,
+        reply_printf("INFO widscan58|%s|%d|%s|%s|%s\n", radio_caps()->target, PROTO_VERSION,
                     esp_app_get_description()->version, FW_COMMIT_DATE, radio_phy_version());
     } else if (!strcmp(line, "PROFILE?")) {
         send_profile(&c);
@@ -349,131 +372,142 @@ static void handle(char *line) {
         memcpy(c.ch, c.profile->ch, sizeof(c.ch));
         c.enabled = (1u << c.nch) - 1;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strncmp(line, "CHANNELS ", 9)) {
-        if (!parse_channels(line + 9, c.profile, &c)) { link_text("ERR channels\n"); return; }
+        if (!parse_channels(line + 9, c.profile, &c)) { reply_text("ERR channels\n"); return; }
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "STATUS?") || !strcmp(line, "CONFIG?")) {
         send_status(line[0] == 'S' ? "STATUS" : "CONFIG");
     } else if (!strcmp(line, "CONFIG SAVE")) {
         /* Starts with 'C', not 'S': RotorHazard mode reads 'A'..'P' as ours. */
-        if (proto != PROTO_RH) { link_text("ERR rh_only\n"); return; }
+        if (proto != PROTO_RH) { reply_text("ERR rh_only\n"); return; }
         rh_saved_t s;
         rh_saved_from(&s, &c);
         esp_err_t e = rh_saved_store(&s);
-        if (e != ESP_OK) { link_printf("ERR save %s\n", esp_err_to_name(e)); return; }
+        if (e != ESP_OK) { reply_printf("ERR save %s\n", esp_err_to_name(e)); return; }
         rh_saved = s;
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "CONFIG RESET")) {
-        if (proto != PROTO_RH) { link_text("ERR rh_only\n"); return; }
+        if (proto != PROTO_RH) { reply_text("ERR rh_only\n"); return; }
         esp_err_t e = rh_saved_erase();
-        if (e != ESP_OK) { link_printf("ERR reset %s\n", esp_err_to_name(e)); return; }
+        if (e != ESP_OK) { reply_printf("ERR reset %s\n", esp_err_to_name(e)); return; }
         rh_saved = rh_builtin;
         set_proto(PROTO_RH); /* apply them now */
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "LEVELFILTER MEDIAN") || !strcmp(line, "LEVELFILTER EMA")) {
         /* RotorHazard mode only: every switch to it applies the saved filter. */
-        if (proto != PROTO_RH) { link_text("ERR rh_only\n"); return; }
+        if (proto != PROTO_RH) { reply_text("ERR rh_only\n"); return; }
         rh_set_filter(line[12] == 'E' ? LAP_FILTER_EMA : LAP_FILTER_MEDIAN);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "LEVELFILTER?")) {
-        link_printf("LEVELFILTER %s\n", level_filter_name(rh_get_filter()));
+        reply_printf("LEVELFILTER %s\n", level_filter_name(rh_get_filter()));
     } else if (!strcmp(line, "PROTOCOL?")) {
-        link_printf("PROTOCOL %s\n", proto == PROTO_RH ? "RH" : "MONITOR");
+        reply_printf("PROTOCOL %s\n", proto == PROTO_RH ? "RH" : "MONITOR");
     } else if (!strcmp(line, "PROTOCOL RH") || !strcmp(line, "PROTOCOL MONITOR")) {
-        set_proto(line[9] == 'R' ? PROTO_RH : PROTO_MONITOR);
-        link_text("OK\n");
+        bool monitor = line[9] == 'M';
+        if (monitor && sink == LINK_UART) { reply_text("ERR uart_port\n"); return; }
+        /* RotorHazard owns the radio while its link is live. */
+        if (monitor && esp_timer_get_time() - last_uart_rx < UART_HOLD_US) {
+            reply_text("ERR uart_rh\n");
+            return;
+        }
+        set_proto(monitor ? PROTO_MONITOR : PROTO_RH);
+        reply_text("OK\n");
     } else if (!strcmp(line, "ENABLE?")) {
-        link_printf("ENABLE %" PRIu32 "\n", c.enabled);
+        reply_printf("ENABLE %" PRIu32 "\n", c.enabled);
     } else if (sscanf(line, "ENABLE %31s %c", arg, &extra) == 1 && parse_u32(arg, &a)) {
         c.enabled = a & ((1u << c.nch) - 1);
         scanner_set_config(&c);
-        link_printf("OK ENABLE %" PRIu32 "\n", c.enabled);
+        reply_printf("OK ENABLE %" PRIu32 "\n", c.enabled);
     } else if (!strcmp(line, "MODE GROUP") || !strcmp(line, "MODE SINGLE")) {
         c.mode = line[5] == 'G' ? PLAN_GROUP : PLAN_SINGLE;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "SCAN START") || !strcmp(line, "SCAN STOP")) {
         c.running = line[5] == 'S' && line[6] == 'T' && line[7] == 'A';
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "GAIN HARDWARE")) {
         c.gain_mode = RADIO_GAIN_HARDWARE;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "GAIN MANUAL %" SCNu32 " %c", &a, &extra) == 1) {
-        if (a > radio_caps()->gain_max) { link_text("ERR gain_range\n"); return; }
+        if (a > radio_caps()->gain_max) { reply_text("ERR gain_range\n"); return; }
         c.gain_mode = RADIO_GAIN_MANUAL;
         c.gain = (uint8_t)a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "GAIN?")) {
-        link_printf("GAIN %s %u 0 %u\n", c.gain_mode == RADIO_GAIN_MANUAL ? "MANUAL" : "HARDWARE", c.gain,
+        reply_printf("GAIN %s %u 0 %u\n", c.gain_mode == RADIO_GAIN_MANUAL ? "MANUAL" : "HARDWARE", c.gain,
                     radio_caps()->gain_max);
     } else if (!strcmp(line, "FILTER AUTO")) {
         c.filter = -1;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "FILTER %" SCNu32 " %c", &a, &extra) == 1 && a <= radio_caps()->filter_code_max) {
         c.filter = (int8_t)a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "CAPN %" SCNu32 " %c", &a, &extra) == 1 && a >= 256 && a <= radio_caps()->max_samples) {
         c.capture_samples = (uint16_t)a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "FFT %" SCNu32 " %c", &a, &extra) == 1 && a >= 64 && a <= PSD_MAX_FFT && !(a & (a - 1))) {
         set_fft(&c, a);
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "SEGMENTS %" SCNu32 " %c", &a, &extra) == 1 && a >= 1 && a <= 64) {
         c.segments = (uint8_t)a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "RATE %" SCNu32 " %c", &a, &extra) == 1 && a < RADIO_MAX_RATES && radio_caps()->rates_hz[a]) {
         c.rate_code = (uint8_t)a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "SETTLE %" SCNu32 " %c", &a, &extra) == 1 && a <= 20000) {
         c.settle_us = a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
+    } else if (sscanf(line, "CONJ %" SCNu32 " %c", &a, &extra) == 1 && a <= 1) {
+        c.conjugate = a;
+        scanner_set_config(&c);
+        reply_text("OK\n");
     } else if (sscanf(line, "IQCORR %" SCNu32 " %c", &a, &extra) == 1 && a <= 1) {
         c.iq_corr = a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "RECALMODE ONCE") || !strcmp(line, "RECALMODE EVERY") || !strcmp(line, "RECALMODE CACHE")) {
         c.recal = line[10] == 'O' ? RADIO_RECAL_ONCE : line[10] == 'C' ? RADIO_RECAL_CACHE : RADIO_RECAL_EVERY_LO;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "RECAL")) {
-        scan_request_t r = {.type = SCAN_REQ_RECAL};
-        if (!scanner_request(&r)) link_text("ERR busy\n");
+        scan_request_t r = {.type = SCAN_REQ_RECAL, .sink = sink};
+        if (!scanner_request(&r)) reply_text("ERR busy\n");
     } else if (sscanf(line, "WIN %" SCNu32 " %" SCNu32 " %c", &a, &b, &extra) == 2 && a > 0 && b >= a && b <= 20000000) {
         c.rssi_hz = a;
         c.search_hz = b;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "METRICS FULL") || !strcmp(line, "METRICS RSSI") || !strcmp(line, "METRICS SNR")) {
         uint8_t m = line[8] == 'F' ? METRICS_FULL : line[8] == 'R' ? METRICS_RSSI : METRICS_SNR;
         if (proto == PROTO_RH && m != c.metrics_mode) rh_reset_levels(); /* RSSI and SNR codes don't compare */
         c.metrics_mode = m;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "METRICS?")) {
-        link_printf("METRICS %s\n", metrics_mode_name(c.metrics_mode));
+        reply_printf("METRICS %s\n", metrics_mode_name(c.metrics_mode));
     } else if (sscanf(line, "AVG %" SCNu32 " %c", &a, &extra) == 1 && a >= METRICS_AVG_SHIFT_MIN &&
                a <= METRICS_AVG_SHIFT_MAX) {
         c.avg_shift = (uint8_t)a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "EMA %" SCNu32 " %" SCNu32 " %c", &a, &b, &extra) == 2 && a >= 1 && a <= 60000 && b >= 1 &&
                b <= 60000) {
         c.ema_ms = (uint16_t)a;
         c.clear_ms = (uint16_t)b;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "SPEC %" SCNu32 " %" SCNu32 " %" SCNu32 " %31s %c", &a, &b, &d, arg2, &extra) == 4 &&
                a <= 255 && b >= 16 && b <= 1024 && (!strcmp(arg2, "MAX") || !strcmp(arg2, "MEAN"))) {
         /* SPEC <every_n_hops (0=off)> <bins> <span_hz one-sided> <MAX|MEAN> */
@@ -482,68 +516,73 @@ static void handle(char *line) {
         c.spec_span_hz = d;
         c.spec_detector = arg2[1] == 'A';
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "RAWIQ %" SCNu32 " %" SCNu32 " %" SCNu32 " %c", &a, &b, &d, &extra) >= 2) {
+        /* RAWIQ data is a frame stream, which only the USB port carries. */
+        if (sink != LINK_USB) {
+            reply_text("ERR uart_port\n");
+            return;
+        }
         /* RAWIQ <lo_khz> <samples> [rate_code] */
         int fields = sscanf(line, "RAWIQ %" SCNu32 " %" SCNu32 " %" SCNu32, &a, &b, &d);
         if (fields < 3) d = c.rate_code;
         if (b < 16 || b > radio_caps()->max_samples || d >= RADIO_MAX_RATES ||
             !radio_caps()->rates_hz[d] || a % radio_caps()->lo_step_khz) {
-            link_text("ERR rawiq_args\n");
+            reply_text("ERR rawiq_args\n");
             return;
         }
-        scan_request_t r = {.type = SCAN_REQ_RAWIQ, .lo_khz = a, .n = (uint16_t)b, .rate_code = (uint8_t)d};
-        if (!scanner_request(&r)) link_text("ERR busy\n");
+        scan_request_t r = {.type = SCAN_REQ_RAWIQ, .sink = sink, .lo_khz = a, .n = (uint16_t)b, .rate_code = (uint8_t)d};
+        if (!scanner_request(&r)) reply_text("ERR busy\n");
     } else if (sscanf(line, "SYNC %31s %c", arg, &extra) == 1) {
-        link_printf("SYNC %s\n", arg);
+        reply_printf("SYNC %s\n", arg);
     } else if (sscanf(line, "FFTTYPE %31s %c", arg, &extra) == 1 && strcmp(arg, "?")) {
         unsigned t = 0;
         while (t < PSD_FFT_COUNT && strcmp(arg, psd_fft_name((psd_fft_t)t))) t++;
-        if (t == PSD_FFT_COUNT) { link_text("ERR ffttype\n"); return; }
+        if (t == PSD_FFT_COUNT) { reply_text("ERR ffttype\n"); return; }
         c.fft_type = (uint8_t)t;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "FFTTYPE?")) {
-        link_printf("FFTTYPE %s\n", psd_fft_name((psd_fft_t)c.fft_type));
+        reply_printf("FFTTYPE %s\n", psd_fft_name((psd_fft_t)c.fft_type));
     } else if (sscanf(line, "FFTEVAL SYNTH %" SCNd32 " %" SCNd32 " %" SCNd32 " %c", &sa, &sb, &sd, &extra) == 3) {
-        scan_request_t r = {.type = SCAN_REQ_FFTEVAL_SYNTH, .p1 = sa, .p2 = sb, .p3 = sd};
-        if (!scanner_request(&r)) link_text("ERR busy\n");
+        scan_request_t r = {.type = SCAN_REQ_FFTEVAL_SYNTH, .sink = sink, .p1 = sa, .p2 = sb, .p3 = sd};
+        if (!scanner_request(&r)) reply_text("ERR busy\n");
     } else if (sscanf(line, "FFTEVAL LIVE %" SCNu32 " %" SCNd32 " %c", &a, &sd, &extra) == 2 &&
                !(a % radio_caps()->lo_step_khz)) {
-        scan_request_t r = {.type = SCAN_REQ_FFTEVAL_LIVE, .lo_khz = a, .p3 = sd};
-        if (!scanner_request(&r)) link_text("ERR busy\n");
+        scan_request_t r = {.type = SCAN_REQ_FFTEVAL_LIVE, .sink = sink, .lo_khz = a, .p3 = sd};
+        if (!scanner_request(&r)) reply_text("ERR busy\n");
     } else if (!strcmp(line, "TIMING?")) {
         scan_timing_t t;
         scanner_timing(&t);
-        link_printf("TIMING psd %" PRIu32 " (prep %" PRIu32 " fft %" PRIu32 " power %" PRIu32 ") metrics %" PRIu32
+        reply_printf("TIMING psd %" PRIu32 " (prep %" PRIu32 " fft %" PRIu32 " power %" PRIu32 ") metrics %" PRIu32
                     " spectrum %" PRIu32 "\n", t.psd_us, t.prep_us, t.fft_us, t.power_us, t.metrics_us, t.spectrum_us);
     } else if (sscanf(line, "PROMISC %" SCNu32 " %c", &a, &extra) == 1 && a <= 1) {
         /* Debug: esp-sdr keeps Wi-Fi promiscuous RX on; measure its CPU cost. */
         esp_wifi_set_promiscuous(a);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "THROTTLE %" SCNu32 " %c", &a, &extra) == 1 && (a == 0 || (a >= 10 && a <= 100000))) {
         c.max_rotation_hz = a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if ((sscanf(line, "PHYIDLE %" SCNu32 " %" SCNu32 " %c", &a, &b, &extra) == 2 ||
                 (sscanf(line, "PHYIDLE %" SCNu32 " %c", &a, &extra) == 1 && !(b = 0))) && a <= 4) {
         /* Debug: radio power-down in the rotation throttle's waits (radio_idle_enter). */
         c.phy_idle = (uint8_t)a;
         c.phy_idle_min_us = b;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "PHYIDLE?")) {
         scan_idle_stats_t s;
         scanner_idle_stats(&s);
-        link_printf("PHYIDLE depth %u min %" PRIu32 " n %" PRIu32 " skipped %" PRIu32 " down %" PRIu32 " up %" PRIu32
+        reply_printf("PHYIDLE depth %u min %" PRIu32 " n %" PRIu32 " skipped %" PRIu32 " down %" PRIu32 " up %" PRIu32
                     " up_max %" PRIu32 " up_est %" PRIu32 "\n", c.phy_idle, c.phy_idle_min_us, s.n, s.skipped,
                     s.down_us_avg, s.up_us_avg, s.up_us_max, s.up_est_us);
     } else if (sscanf(line, "REGWATCH %" SCNu32 " %c", &a, &extra) == 1 && a <= 1) {
         radio_set_regwatch(a);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "TUNESKIP %" SCNu32 " %c", &a, &extra) == 1 && a <= 7) {
         radio_set_tune_skip(a);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "SPURS?")) {
         reply_add("SPURS %u", c.nspurs);
         for (unsigned j = 0; j < c.nspurs; j++) reply_add(" %" PRIu32, c.spurs_khz[j]);
@@ -552,60 +591,69 @@ static void handle(char *line) {
     } else if (!strcmp(line, "SPURS CLEAR")) {
         c.nspurs = 0;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "SPURS ADD %" SCNu32 " %c", &a, &extra) == 1) {
-        if (c.nspurs >= 16) { link_text("ERR spurs_full\n"); return; }
+        if (c.nspurs >= 16) { reply_text("ERR spurs_full\n"); return; }
         c.spurs_khz[c.nspurs++] = a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (sscanf(line, "SPURS GUARD %" SCNu32 " %c", &a, &extra) == 1 && a <= 1000000) {
         c.spur_guard_hz = a;
         scanner_set_config(&c);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "GPIO?")) {
         send_gpio();
     } else if (!strcmp(line, "GPIO SAVE")) {
         esp_err_t e = gpio_out_save();
-        if (e != ESP_OK) { link_printf("ERR save %s\n", esp_err_to_name(e)); return; }
-        link_text("OK\n");
+        if (e != ESP_OK) { reply_printf("ERR save %s\n", esp_err_to_name(e)); return; }
+        reply_text("OK\n");
     } else if (sscanf(line, "GPIO %" SCNu32 " %31s %c", &a, arg, &extra) == 2) {
         /* GPIO <n> NONE|LOW|HIGH: at once; GPIO SAVE keeps it for boot. */
         gpio_out_t s = !strcmp(arg, "LOW") ? GPIO_OUT_LOW : !strcmp(arg, "HIGH") ? GPIO_OUT_HIGH : GPIO_OUT_NONE;
-        if (s == GPIO_OUT_NONE && strcmp(arg, "NONE")) { link_text("ERR gpio_state\n"); return; }
-        if (!gpio_out_allowed(a)) { link_text("ERR gpio_pin\n"); return; }
+        if (s == GPIO_OUT_NONE && strcmp(arg, "NONE")) { reply_text("ERR gpio_state\n"); return; }
+        if (!gpio_out_allowed(a)) { reply_text("ERR gpio_pin\n"); return; }
         gpio_out_set(a, s);
-        link_text("OK\n");
+        reply_text("OK\n");
     } else if (!strcmp(line, "BOOTLOADER")) {
-        link_text("OK BOOTLOADER\n");
+        reply_text("OK BOOTLOADER\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         radio_reboot_to_bootloader();
     } else if (!strcmp(line, "REBOOT")) {
-        link_text("OK REBOOT\n");
+        reply_text("OK REBOOT\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         esp_restart();
     } else {
-        link_text("ERR command\n");
+        reply_text("ERR command\n");
     }
 }
 
-/* Line assembly for our commands. */
-static char line[128];
-static size_t used;
-static bool overflow;
-static void line_byte(uint8_t b) {
+/* Line assembly and protocol state per port: the USB host and the Pi write
+ * different protocols, and one must not reset the other's half-sent line. */
+typedef struct {
+    char line[128];
+    size_t used;
+    bool overflow;
+    bool probe;      /* monitor mode: a lone RotorHazard probe, waiting to see nothing follows */
+    bool text;       /* RotorHazard mode: one of our command lines in progress */
+    int64_t text_start;
+    int64_t last_rx;
+} cmd_port_t;
+static cmd_port_t *ports; /* heap: static SRAM below the C5's RF dump bank is nearly full */
+
+static void line_byte(cmd_port_t *p, uint8_t b, link_sink_t sink) {
     if (b == '\r') return;
     if (b == '\n') {
-        if (overflow) link_text("ERR command_length\n");
-        else if (used) {
-            line[used] = 0;
-            handle(line);
+        if (p->overflow) link_text_to(sink, "ERR command_length\n");
+        else if (p->used) {
+            p->line[p->used] = 0;
+            handle(p->line, sink);
         }
-        used = 0;
-        overflow = false;
+        p->used = 0;
+        p->overflow = false;
         return;
     }
-    if (used + 1 < sizeof(line)) line[used++] = (char)b;
-    else overflow = true;
+    if (p->used + 1 < sizeof(p->line)) p->line[p->used++] = (char)b;
+    else p->overflow = true;
 }
 
 #define PROBE_IDLE_US 100000 /* RotorHazard waits 2 s and flushes before its probe */
@@ -613,57 +661,68 @@ static void line_byte(uint8_t b) {
 #define TEXT_TIMEOUT_US 200000
 
 static void commands_task(void *arg) {
-    (void)arg;
+    link_sink_t sink = (link_sink_t)(intptr_t)arg;
+    cmd_port_t *p = &ports[sink];
     uint8_t buf[64];
-    int64_t last_rx = 0, text_start = 0;
-    bool probe = false; /* monitor mode: a lone RotorHazard probe, waiting to see nothing follows */
-    bool text = false;  /* RotorHazard mode: one of our command lines in progress */
     for (;;) {
-        int n = link_read(buf, sizeof(buf), probe ? PROBE_QUIET_MS : 20);
+        int n = link_read_from(sink, buf, sizeof(buf), p->probe ? PROBE_QUIET_MS : 20);
         int64_t now = esp_timer_get_time();
+        xSemaphoreTake(cmd_lock, portMAX_DELAY);
         if (n <= 0) {
-            if (probe) {
-                probe = false;
-                set_proto(PROTO_RH);
-                rh_rx(RH_REVISION_CODE, now);
+            if (p->probe) {
+                p->probe = false; /* also when the other port changed the protocol meanwhile */
+                if (proto == PROTO_MONITOR) {
+                    set_proto(PROTO_RH);
+                    rh_rx(sink, RH_REVISION_CODE, now);
+                }
             }
             rh_poll(now);
-            if (text && now - text_start > TEXT_TIMEOUT_US) {
-                text = false;
-                used = 0;
-                overflow = false;
+            if (p->text && now - p->text_start > TEXT_TIMEOUT_US) {
+                p->text = false;
+                p->used = 0;
+                p->overflow = false;
             }
+            xSemaphoreGive(cmd_lock);
             continue;
         }
         for (int i = 0; i < n; i++) {
             uint8_t b = buf[i];
+            /* The Pi is a RotorHazard server: its first byte takes the radio
+             * back from a USB monitor session (and applies the saved RH
+             * settings, as PROTOCOL RH does). */
+            if (sink == LINK_UART && proto != PROTO_RH) set_proto(PROTO_RH);
             if (proto == PROTO_MONITOR) {
-                if (probe) { /* more followed: it was just a byte of a line */
-                    probe = false;
-                    line_byte(RH_REVISION_CODE);
+                if (p->probe) { /* more followed: it was just a byte of a line */
+                    p->probe = false;
+                    line_byte(p, RH_REVISION_CODE, sink);
                 }
-                if (n == 1 && b == RH_REVISION_CODE && !used && now - last_rx >= PROBE_IDLE_US) probe = true;
-                else line_byte(b);
-            } else if (text || (rh_idle() && rh_text_start(b))) {
-                if (!text) {
-                    text = true;
-                    text_start = now;
-                    used = 0;
-                    overflow = false;
+                if (n == 1 && b == RH_REVISION_CODE && !p->used && now - p->last_rx >= PROBE_IDLE_US) p->probe = true;
+                else line_byte(p, b, sink);
+            } else if (p->text || (rh_idle(sink) && rh_text_start(b))) {
+                if (!p->text) {
+                    p->text = true;
+                    p->text_start = now;
+                    p->used = 0;
+                    p->overflow = false;
                 }
-                if (b == '\n') text = false;
-                line_byte(b); /* may switch to monitor mode */
+                if (b == '\n') p->text = false;
+                line_byte(p, b, sink); /* may switch to monitor mode */
             } else {
-                rh_rx(b, now);
+                rh_rx(sink, b, now);
             }
-            last_rx = now;
+            p->last_rx = now;
+            if (sink == LINK_UART) last_uart_rx = now;
         }
+        xSemaphoreGive(cmd_lock);
     }
 }
 
 void commands_task_start(void) {
     reply = malloc(REPLY_BYTES);
     if (reply) reply[0] = 0;
+    ports = calloc(LINK_COUNT, sizeof(*ports));
+    cmd_lock = xSemaphoreCreateMutex();
+    if (!ports || !cmd_lock) return; /* without them there is no host protocol */
     /* Boot in RotorHazard mode (rh_init has run); monitor mode starts from the defaults. */
     scan_config_t c;
     scanner_get_config(&c);
@@ -675,5 +734,8 @@ void commands_task_start(void) {
     rh_saved_apply(&c, &rh_saved);
     scanner_set_config(&c);
     link_set_streaming(false);
-    xTaskCreatePinnedToCore(commands_task, "cmd", 6144, NULL, 6, NULL, portNUM_PROCESSORS - 1);
+    xTaskCreatePinnedToCore(commands_task, "cmd", 6144, (void *)(intptr_t)LINK_USB, 6, NULL, portNUM_PROCESSORS - 1);
+    if (link_ready(LINK_UART))
+        xTaskCreatePinnedToCore(commands_task, "cmd_uart", 6144, (void *)(intptr_t)LINK_UART, 6, NULL,
+                                portNUM_PROCESSORS - 1);
 }

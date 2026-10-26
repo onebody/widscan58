@@ -1,8 +1,9 @@
-// Writes the firmware published with this page (tools/pages_firmware.py puts
-// it in ./firmware/) to a board over Web Serial or WebUSB, using esptool-js.
-// GPL-3.0-or-later.
+// Writes a firmware version published with this page (tools/pages_firmware.py
+// puts them in ./firmware/) to a board over Web Serial or WebUSB, using
+// esptool-js. GPL-3.0-or-later.
 import SparkMD5 from "spark-md5";
 import type { ESPLoader } from "esptool-js";
+import { t } from "../i18n";
 import type { Port } from "./device";
 
 export interface ManifestPart {
@@ -19,6 +20,22 @@ export interface Manifest {
   version: string;
   date?: string | null;
   builds: { chipFamily: string; parts: ManifestPart[] }[];
+}
+
+/** One firmware version the page offers (firmware/index.json, written from
+ *  firmware/versions.json in the repository). */
+export interface FirmwareVersion {
+  id: string;
+  label: string;
+  note?: string;
+  /** Directory under ./firmware/ holding this version's manifest parts. */
+  dir: string;
+  manifest: Manifest;
+}
+
+export interface VersionIndex {
+  default: string;
+  versions: FirmwareVersion[];
 }
 
 const FIRMWARE_DIR = "./firmware/";
@@ -77,16 +94,26 @@ const offline = (): never => {
   throw new OfflineError();
 };
 
-export async function loadManifest(): Promise<Manifest> {
-  const r = await fetch(FIRMWARE_DIR + "manifest.json", { cache: "no-cache" }).catch(offline);
+/** The firmware versions this page offers, from ./firmware/index.json. A page
+ *  staged with a single firmware (older tools/pages_firmware.py, `npm run
+ *  dev`) still works: it is the only, unlabelled version. */
+export async function loadVersions(): Promise<VersionIndex> {
+  const r = await fetch(FIRMWARE_DIR + "index.json", { cache: "no-cache" }).catch(offline);
   // The dev server answers a missing file with index.html, hence the JSON check.
+  const idx = r.ok ? ((await r.json().catch(() => null)) as VersionIndex | null) : null;
+  if (idx?.versions?.length) return idx;
+  return { default: "", versions: [{ id: "", label: "", dir: "", manifest: await loadManifest() }] };
+}
+
+async function loadManifest(): Promise<Manifest> {
+  const r = await fetch(FIRMWARE_DIR + "manifest.json", { cache: "no-cache" }).catch(offline);
   const m = r.ok ? ((await r.json().catch(() => null)) as Manifest | null) : null;
-  if (!m?.builds) throw new Error("no firmware is published with this page");
+  if (!m?.builds) throw new Error(t("no firmware is published with this page"));
   return m;
 }
 
-async function fetchPart(p: ManifestPart): Promise<Uint8Array> {
-  const r = await fetch(FIRMWARE_DIR + p.path, { cache: "no-cache" }).catch(offline);
+async function fetchPart(base: string, p: ManifestPart): Promise<Uint8Array> {
+  const r = await fetch(base + p.path, { cache: "no-cache" }).catch(offline);
   if (!r.ok) throw new Error(`${p.path}: HTTP ${r.status}`);
   const data = new Uint8Array(await r.arrayBuffer());
   const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
@@ -101,10 +128,13 @@ export interface FlashEvents {
   log(line: string): void;
 }
 
-/** Flash `port` (closed; it is opened here and closed again). The board may
- *  already be in download mode (BOOT + RESET); otherwise it is reset into it
- *  over USB Serial/JTAG. Ends with a watchdog reset into the new firmware. */
-export async function flashFirmware(port: Port, manifest: Manifest, ev: FlashEvents): Promise<void> {
+/** Flash `port` (closed; it is opened here and closed again) with `version`.
+ *  The board may already be in download mode (BOOT + RESET); otherwise it is
+ *  reset into it over USB Serial/JTAG. Ends with a watchdog reset into the new
+ *  firmware. */
+export async function flashFirmware(port: Port, version: FirmwareVersion, ev: FlashEvents): Promise<void> {
+  const manifest = version.manifest;
+  const base = FIRMWARE_DIR + (version.dir ? version.dir + "/" : "");
   const { ESPLoader, Transport } = await import("esptool-js").catch(offline);
   // esptool-js writes "Connecting..." and its dots without a newline.
   let pending = "";
@@ -121,7 +151,7 @@ export async function flashFirmware(port: Port, manifest: Manifest, ev: FlashEve
   const transport = new Transport(port as SerialPort);
   const loader = new ESPLoader({ transport, baudrate: 115200, terminal });
   try {
-    ev.stage("Connecting to the bootloader…");
+    ev.stage(t("Connecting to the bootloader…"));
     try {
       // A board put into download mode by hand answers without a reset.
       await loader.main("no_reset");
@@ -136,10 +166,10 @@ export async function flashFirmware(port: Port, manifest: Manifest, ev: FlashEve
     if (!wdt || !build) throw new Error(`this page has no firmware for the ${chip}`);
     await disableWatchdogs(loader, wdt);
 
-    ev.stage("Downloading firmware…");
-    const files = await Promise.all(build.parts.map(fetchPart));
+    ev.stage(t("Downloading firmware…"));
+    const files = await Promise.all(build.parts.map((p) => fetchPart(base, p)));
 
-    ev.stage(`Writing ${manifest.version}…`);
+    ev.stage(t("Writing {version}…", { version: manifest.version }));
     const total = build.parts.reduce((s, p) => s + p.size, 0);
     const before = build.parts.map((_, i) => build.parts.slice(0, i).reduce((s, p) => s + p.size, 0));
     await loader.writeFlash({
@@ -155,7 +185,7 @@ export async function flashFirmware(port: Port, manifest: Manifest, ev: FlashEve
     });
     ev.progress(1);
 
-    ev.stage("Restarting the board…");
+    ev.stage(t("Restarting the board…"));
     await watchdogReset(loader, wdt);
   } finally {
     await transport.disconnect().catch(() => {});

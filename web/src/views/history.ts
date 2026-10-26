@@ -2,6 +2,7 @@
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
 import { smoothedSeries, type ChannelState } from "../model/store";
+import { t as tr } from "../i18n";
 import { axes, channelColor, drawGrid, el, prepare, theme } from "../util/canvas";
 
 export class History implements View {
@@ -51,11 +52,21 @@ export class History implements View {
     const p = store.profile;
     const s = prepare(this.canvas);
     if (!p) return;
-    const legendKey = store.planKey;
+    const legendKey = `${store.planKey}|${p.channels
+      .map((c) => app.rhServer.pilotAt(c.khz / 1000)?.label ?? "")
+      .join(",")}`;
     if (this.legendFor !== legendKey) {
       this.legendFor = legendKey;
       this.legend.replaceChildren(
-        ...p.channels.map((_, id) => el("span", {}, el("i", { style: `background:${channelColor(id)}` }), app.channelName(id))),
+        ...p.channels.map((c, id) => {
+          const pilot = app.rhServer.pilotAt(c.khz / 1000);
+          return el(
+            "span",
+            { title: pilot ? `${tr("RotorHazard pilot")}: ${pilot.full}` : "" },
+            el("i", { style: `background:${channelColor(id)}` }),
+            app.channelName(id) + (pilot ? ` · ${pilot.label}` : ""),
+          );
+        }),
       );
     }
     const now = store.now();
@@ -144,7 +155,9 @@ export class History implements View {
       if (best > 0.5) return;
       const r = el("div", { class: "row" }, el("i", { style: `background:${channelColor(id)}` }), el("b"), el("span"));
       r.children[1].textContent = `${val.toFixed(1)} dBFS`;
-      r.children[2].textContent = app.channelName(id);
+      const pilot = app.rhServer.pilotAt(p.channels[id].khz / 1000);
+      r.children[2].textContent = app.channelName(id) + (pilot ? ` · ${pilot.label}` : "");
+      if (pilot) r.title = `${tr("RotorHazard pilot")}: ${pilot.full}`;
       rows.push(r);
     });
     this.tip.replaceChildren(...rows);

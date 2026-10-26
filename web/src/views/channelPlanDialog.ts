@@ -3,6 +3,8 @@
 // ones a band x channel grid. Both edit the same selection.
 // GPL-3.0-or-later.
 import { BANDS, MAX_CHANNELS, normalizePlan, type Band } from "../model/channelPlan";
+import type { RhPilot } from "../model/rhServer";
+import { t } from "../i18n";
 import { el } from "../util/canvas";
 
 // Spectrum view sections, each with its own axis (MHz) at the same scale
@@ -27,16 +29,20 @@ const pct = (s: { lo: number; hi: number }, mhz: number) => ((mhz - s.lo) / (s.h
 export class ChannelPlanDialog {
   readonly el: HTMLDialogElement;
   private selected = new Set<string>();
-  // Every channel control, grid and spectrum; mhz only on spectrum humps.
-  private controls: { name: string; btn: HTMLButtonElement; mhz?: number }[] = [];
+  // Every channel control, grid and spectrum; mhz on both, pilotEl only on
+  // spectrum humps (the grid is too tight for a third line).
+  private controls: { name: string; btn: HTMLButtonElement; mhz?: number; pilotEl?: HTMLElement }[] = [];
   private sections: Section[] = [];
   private gridScroll = el("div", { class: "plan-scroll" });
   private gridWrap = el("div", { class: "plan-scroll-wrap plan-grid-view" }, this.gridScroll);
   private count = el("span", { class: "plan-count" });
+  private intro = el("p");
+  private bandTitles: { btn: HTMLButtonElement; band: string }[] = [];
   private okBtn = el("button", { class: "primary", autofocus: "" }, "OK");
   private onOk: (channels: string[]) => void = () => {};
+  private hintTimer = 0;
 
-  constructor() {
+  constructor(private pilotAt: (mhz: number) => RhPilot | null = () => null) {
     this.gridScroll.append(this.buildGrid());
     this.gridScroll.onscroll = () => this.syncScrollFade();
     new ResizeObserver(() => this.syncScrollFade()).observe(this.gridScroll);
@@ -55,39 +61,71 @@ export class ChannelPlanDialog {
       "dialog",
       { class: "plan-dialog" },
       el("h2", {}, "Channels to scan"),
-      el("p", {}, `Select up to ${MAX_CHANNELS} channels. Click a band name to select all eight of its channels.`),
+      this.intro,
       this.buildSpectrum(),
       this.gridWrap,
       el("div", { class: "plan-buttons" }, clearBtn, this.count, el("span", { class: "spacer" }), cancelBtn, this.okBtn),
+    );
+    this.setIntro();
+  }
+
+  private setIntro() {
+    this.intro.textContent = t(
+      "Select up to {n} channels. Click a band name to switch to that band, or click channels in several bands to mix them.",
+      { n: MAX_CHANNELS },
     );
   }
 
   open(current: string[], onOk: (channels: string[]) => void) {
     this.selected = new Set(current);
     this.onOk = onOk;
+    clearTimeout(this.hintTimer);
+    this.count.classList.remove("warn");
+    this.setIntro();
     this.sync();
     this.el.showModal();
     this.syncScrollFade();
   }
 
   private bandButton(b: Band): HTMLButtonElement {
-    const btn = el("button", { class: "plan-band", title: `Select all of ${b.name} (replaces the selection)` }, el("b", {}, b.letter), el("span", {}, b.name));
+    const btn = el(
+      "button",
+      { class: "plan-band", title: t("Select all of {band} (replaces the selection)", { band: b.name }) },
+      el("b", {}, b.letter),
+      el("span", {}, b.name),
+    );
     btn.onclick = () => {
       this.selected = new Set(b.mhz.map((_, j) => `${b.letter}${j + 1}`));
       this.sync();
     };
+    this.bandTitles.push({ btn, band: b.name });
     return btn;
   }
 
   private toggle(name: string) {
     if (this.selected.has(name)) this.selected.delete(name);
     else if (this.selected.size < MAX_CHANNELS) this.selected.add(name);
+    else {
+      this.flash(t("The plan is full. Clear a channel first."));
+      return;
+    }
     this.sync();
   }
 
-  private addControl(name: string, btn: HTMLButtonElement, mhz?: number) {
+  /** Show a hint in the counter's place for a moment. */
+  private flash(msg: string) {
+    clearTimeout(this.hintTimer);
+    this.count.textContent = msg;
+    this.count.classList.add("warn");
+    this.hintTimer = window.setTimeout(() => {
+      this.count.classList.remove("warn");
+      this.sync();
+    }, 1800);
+  }
+
+  private addControl(name: string, btn: HTMLButtonElement, mhz?: number, pilotEl?: HTMLElement) {
     btn.onclick = () => this.toggle(name);
-    this.controls.push({ name, btn, mhz });
+    this.controls.push({ name, btn, mhz, pilotEl });
   }
 
   private buildGrid(): HTMLTableElement {
@@ -96,7 +134,7 @@ export class ChannelPlanDialog {
       const cells = b.mhz.map((mhz, j) => {
         const name = `${b.letter}${j + 1}`;
         const btn = el("button", { class: "plan-chan", title: `${name}: ${mhz} MHz` }, el("b", {}, name), el("span", {}, String(mhz)));
-        this.addControl(name, btn);
+        this.addControl(name, btn, mhz);
         return el("td", {}, btn);
       });
       return el("tr", {}, el("th", {}, this.bandButton(b)), ...cells);
@@ -134,8 +172,9 @@ export class ChannelPlanDialog {
           svg.setAttribute("viewBox", "0 0 100 100");
           svg.setAttribute("preserveAspectRatio", "none");
           svg.innerHTML = '<path d="M0,100 C28,100 30,6 50,6 C70,6 72,100 100,100 Z"/>';
-          hump.append(svg, el("span", { class: "spec-label" }, el("b", {}, name), el("small", {}, String(mhz))));
-          this.addControl(name, hump, mhz);
+          const pilotEl = el("small", { class: "plan-pilot" });
+          hump.append(svg, el("span", { class: "spec-label" }, el("b", {}, name), el("small", {}, String(mhz)), pilotEl));
+          this.addControl(name, hump, mhz, pilotEl);
           track.append(hump);
         });
         return el("div", { class: "spec-row" }, this.bandButton(b), track);
@@ -147,19 +186,25 @@ export class ChannelPlanDialog {
 
   private sync() {
     const full = this.selected.size >= MAX_CHANNELS;
-    for (const { name, btn } of this.controls) {
+    this.count.classList.remove("warn");
+    for (const { btn, band } of this.bandTitles)
+      btn.title = t("Select all of {band} (replaces the selection)", { band });
+    for (const { name, btn, mhz, pilotEl } of this.controls) {
       const on = this.selected.has(name);
       btn.classList.toggle("on", on);
-      btn.disabled = full && !on;
+      const pilot = mhz !== undefined ? this.pilotAt(mhz) : null;
+      if (mhz !== undefined) btn.title = `${name}: ${mhz} MHz` + (pilot ? ` · ${pilot.full}` : "");
+      if (pilotEl) pilotEl.textContent = pilot?.label ?? "";
     }
     // Dashed lines through every band at each selected frequency: shows
     // near-collisions across bands (e.g. A8, R3, B1).
-    const picked = this.controls.filter((c) => c.mhz !== undefined && this.selected.has(c.name));
+    const picked = this.controls.filter((c) => c.pilotEl !== undefined && this.selected.has(c.name));
     for (const s of this.sections)
       s.guides.replaceChildren(
         ...picked.filter((c) => s.names.has(c.name)).map((c) => el("div", { class: "spec-guide", style: `left:${pct(s, c.mhz!)}%` })),
       );
-    this.count.textContent = `${this.selected.size} of ${MAX_CHANNELS} selected` + (full ? " (maximum)" : "");
+    this.count.textContent =
+      t("{n} of {max} selected", { n: this.selected.size, max: MAX_CHANNELS }) + (full ? ` ${t("(maximum)")}` : "");
     this.okBtn.disabled = this.selected.size === 0;
   }
 

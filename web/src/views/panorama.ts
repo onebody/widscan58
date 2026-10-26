@@ -2,6 +2,7 @@
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
 import type { Segment } from "../model/store";
+import { t as tr } from "../i18n";
 import { axes, channelColor, drawGrid, el, prepare, seqLut, theme, type Axes } from "../util/canvas";
 
 /** Composite of all segments on a pixel grid; each point comes from the segment
@@ -197,7 +198,7 @@ export class Panorama implements View {
     if (!p || !store.segments.size) {
       s.ctx.fillStyle = theme().muted;
       s.ctx.font = "12px system-ui";
-      s.ctx.fillText("Waiting for spectrum frames…", 50, 40);
+      s.ctx.fillText(tr("Waiting for spectrum frames…"), 50, 40);
       return;
     }
     const t = theme();
@@ -231,12 +232,20 @@ export class Panorama implements View {
     drawGrid(s, a, (v) => (v / 1000).toFixed(1), (v) => `${v}`, 10, 5);
     // Channel labels and the LO markers of the current plan.
     ctx.font = "600 11px system-ui";
-    ctx.textAlign = "center";
+    ctx.textAlign = "left";
     ctx.textBaseline = "top";
     p.channels.forEach((c, id) => {
       if (c.khz < f0 || c.khz > f1) return;
+      const name = app.channelName(id);
+      const pilot = app.rhServer.pilotAt(c.khz / 1000);
+      const tail = pilot ? ` · ${pilot.label}` : "";
+      const x0 = a.sx(c.khz) - (ctx.measureText(name).width + ctx.measureText(tail).width) / 2;
       ctx.fillStyle = t.ink2;
-      ctx.fillText(app.channelName(id), a.sx(c.khz), a.top + 2);
+      ctx.fillText(name, x0, a.top + 2);
+      if (pilot) {
+        ctx.fillStyle = t.accent;
+        ctx.fillText(tail, x0 + ctx.measureText(name).width, a.top + 2);
+      }
     });
     if (st) {
       ctx.fillStyle = t.muted;
@@ -305,13 +314,16 @@ export class Panorama implements View {
       return r;
     };
     const head = el("div", { class: "head" });
-    head.textContent = `${(khz / 1000).toFixed(3)} MHz${chId >= 0 ? ` · ${this.app.channelName(chId)}` : ""}`;
+    const pilot = this.app.rhServer.pilotAt(khz / 1000);
+    head.textContent = `${(khz / 1000).toFixed(3)} MHz${chId >= 0 ? ` · ${this.app.channelName(chId)}` : ""}${
+      pilot ? ` · ${pilot.label}` : ""
+    }`;
     this.tip.replaceChildren(
       head,
-      row(t.ink, fmt(comp.live[i]), "live"),
-      row(t.warning, fmt(comp.max[i]), "max hold"),
-      row(t.accent, fmt(comp.avg[i]), "average"),
-      row(t.muted, fmt(comp.floor[i]), "floor / bin"),
+      row(t.ink, fmt(comp.live[i]), tr("live")),
+      row(t.warning, fmt(comp.max[i]), tr("max hold")),
+      row(t.accent, fmt(comp.avg[i]), tr("average")),
+      row(t.muted, fmt(comp.floor[i]), tr("floor / bin")),
     );
     this.tip.style.display = "block";
     const w = this.tip.offsetWidth;
@@ -406,14 +418,22 @@ export class Panorama implements View {
     s.ctx.textBaseline = "top";
     // Channel center ticks along the bottom.
     const p = store.profile!;
-    s.ctx.textAlign = "center";
+    s.ctx.textAlign = "left";
     s.ctx.textBaseline = "top";
     p.channels.forEach((c, id) => {
       const x = wa.sx(c.khz);
       s.ctx.fillStyle = channelColor(id);
       s.ctx.fillRect(x - 1, wa.bottom, 2, 4);
+      const name = this.app.channelName(id);
+      const pilot = this.app.rhServer.pilotAt(c.khz / 1000);
+      const tail = pilot ? ` · ${pilot.label}` : "";
+      const x0 = x - (s.ctx.measureText(name).width + s.ctx.measureText(tail).width) / 2;
       s.ctx.fillStyle = t.ink2;
-      s.ctx.fillText(this.app.channelName(id), x, wa.bottom + 4);
+      s.ctx.fillText(name, x0, wa.bottom + 4);
+      if (pilot) {
+        s.ctx.fillStyle = t.accent;
+        s.ctx.fillText(tail, x0 + s.ctx.measureText(name).width, wa.bottom + 4);
+      }
     });
   }
 }

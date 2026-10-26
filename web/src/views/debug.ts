@@ -1,6 +1,7 @@
 // Telemetry, hop timing, protocol log, command console.
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
+import { t as tr } from "../i18n";
 import { axes, drawGrid, el, prepare, theme } from "../util/canvas";
 
 function stat(label: string): { root: HTMLElement; value: HTMLElement; sub: HTMLElement } {
@@ -78,21 +79,31 @@ export class Telemetry implements View {
     }
     if (tel) {
       const hops = store.status?.plan.length ?? 0;
-      this.set("rot", tel.rotationHz.toFixed(1), "/s", `${hops} hops · ${(tel.rotationHz * hops).toFixed(0)} hops/s`);
-      this.set("hop", (tel.hopUsAvg / 1000).toFixed(2), "ms", `max ${(tel.hopUsMax / 1000).toFixed(2)} ms`);
-      this.set("tune", (tel.tuneUsAvg / 1000).toFixed(2), "ms", `max ${(tel.tuneUsMax / 1000).toFixed(2)} ms`);
-      this.set("cap", (tel.captureUsAvg / 1000).toFixed(2), "ms", `${store.status?.capture_samples ?? "?"} samples`);
-      this.set("dsp", (tel.dspUsAvg / 1000).toFixed(2), "ms", `max ${(tel.dspUsMax / 1000).toFixed(2)} ms`);
+      this.set("rot", tel.rotationHz.toFixed(1), "/s", tr("{hops} hops · {rate} hops/s", { hops, rate: (tel.rotationHz * hops).toFixed(0) }));
+      this.set("hop", (tel.hopUsAvg / 1000).toFixed(2), "ms", tr("max {v} ms", { v: (tel.hopUsMax / 1000).toFixed(2) }));
+      this.set("tune", (tel.tuneUsAvg / 1000).toFixed(2), "ms", tr("max {v} ms", { v: (tel.tuneUsMax / 1000).toFixed(2) }));
+      this.set("cap", (tel.captureUsAvg / 1000).toFixed(2), "ms", tr("{n} samples", { n: store.status?.capture_samples ?? "?" }));
+      this.set("dsp", (tel.dspUsAvg / 1000).toFixed(2), "ms", tr("max {v} ms", { v: (tel.dspUsMax / 1000).toFixed(2) }));
       this.dropHist.push({ t: now, drops: tel.drops });
       while (this.dropHist.length > 1 && now - this.dropHist[0].t > 10000) this.dropHist.shift();
       const recent = tel.drops - this.dropHist[0].drops;
-      this.set("link", (tel.linkFill * 100).toFixed(0), "%", `${recent} dropped in last 10 s · ${tel.drops} since boot`);
-      this.set("heap", (tel.heapFree / 1024).toFixed(0), "KiB", "internal RAM");
+      this.set(
+        "link",
+        (tel.linkFill * 100).toFixed(0),
+        "%",
+        tr("{recent} dropped in last 10 s · {drops} since boot", { recent, drops: tel.drops }),
+      );
+      this.set("heap", (tel.heapFree / 1024).toFixed(0), "KiB", tr("internal RAM"));
     }
     if (dev) {
       const st = dev.stats();
-      this.set("usb", (this.bps / 1024).toFixed(1), "KiB/s", `${(st.bytes / 1048576).toFixed(1)} MiB total`);
-      this.set("err", String(st.crcErrors), "CRC", `${tel?.captureErrors ?? 0} capture · ${st.resyncBytes} resync B`);
+      this.set("usb", (this.bps / 1024).toFixed(1), "KiB/s", tr("{n} MiB total", { n: (st.bytes / 1048576).toFixed(1) }));
+      this.set(
+        "err",
+        String(st.crcErrors),
+        "CRC",
+        tr("{capture} capture · {resync} resync B", { capture: tel?.captureErrors ?? 0, resync: st.resyncBytes }),
+      );
     }
     this.renderTiming();
   }
@@ -143,8 +154,14 @@ export class Telemetry implements View {
       return r;
     };
     const head = el("div", { class: "head" });
-    head.textContent = `hop −${n - 1 - j}`;
-    this.tip.replaceChildren(head, row(t.series[0], h.tune, "tune"), row(t.series[1], h.capture, "capture"), row(t.series[2], h.dsp, "DSP"), row(t.ink, h.tune + h.capture + h.dsp, "total"));
+    head.textContent = tr("hop −{n}", { n: n - 1 - j });
+    this.tip.replaceChildren(
+      head,
+      row(t.series[0], h.tune, tr("tune")),
+      row(t.series[1], h.capture, tr("capture")),
+      row(t.series[2], h.dsp, tr("DSP")),
+      row(t.ink, h.tune + h.capture + h.dsp, tr("total")),
+    );
     this.tip.style.display = "block";
     const w = this.tip.offsetWidth;
     this.tip.style.left = `${this.hoverX + 12 + w > a.right ? this.hoverX - 12 - w : this.hoverX + 12}px`;

@@ -15,6 +15,7 @@ import {
   meanDb,
 } from "../model/power";
 import { CHF } from "../proto/frames";
+import { getLang, t } from "../i18n";
 import { channelColor, el } from "../util/canvas";
 import { ChannelPlanDialog } from "./channelPlanDialog";
 
@@ -22,6 +23,8 @@ const dbmText = (v: number) => v.toFixed(0).replace("-", "−");
 
 export class PowerWarning implements View {
   el: HTMLElement;
+  private cal = el("p", { class: "muted" });
+  private lang = getLang();
 
   constructor() {
     const rows = ATTENUATOR_TABLE.map((r) =>
@@ -34,6 +37,11 @@ export class PowerWarning implements View {
         el("td", {}, `${r.rating}+`),
       ),
     );
+    const note = t(
+      "The ESP can read from about −32 dBm to {max} dBm. Note that many attenuators misreport their power reduction-- take the reported power as simply a relative power reading for your measurement setup.",
+      { max: dbmText(INPUT_MAX_DBM) },
+    );
+    this.cal.textContent = note;
     this.el = el(
       "section",
       { class: "card span-12 power-warn" },
@@ -55,18 +63,18 @@ export class PowerWarning implements View {
         ),
         el("tbody", {}, ...rows),
       ),
-      el(
-        "p",
-        { class: "muted" },
-        `The ESP can read from about −32 dBm to ${dbmText(INPUT_MAX_DBM)} dBm. ` +
-          "" +
-          "Note that many attenuators misreport their power reduction-- take the reported power " +
-          "as simply a relative power reading for your measurement setup.",
-      ),
+      this.cal,
     );
   }
 
-  render() {}
+  render() {
+    if (getLang() === this.lang) return;
+    this.lang = getLang();
+    this.cal.textContent = t(
+      "The ESP can read from about −32 dBm to {max} dBm. Note that many attenuators misreport their power reduction-- take the reported power as simply a relative power reading for your measurement setup.",
+      { max: dbmText(INPUT_MAX_DBM) },
+    );
+  }
 }
 
 interface Tile {
@@ -74,6 +82,7 @@ interface Tile {
   key: HTMLSpanElement;
   name: HTMLSpanElement;
   freq: HTMLDivElement;
+  pilot: HTMLDivElement;
   main: HTMLDivElement; // the power in mW or W, large
   sub: HTMLDivElement; // the same in dBm
   kv: HTMLDivElement;
@@ -96,7 +105,7 @@ export class PowerChannels implements View {
     const edit = el("button", { title: "Choose which channels to measure" }, "Edit");
     all.onclick = () => void this.setMask((1 << (app.store.profile?.channels.length ?? 8)) - 1);
     none.onclick = () => void this.setMask(0);
-    const dialog = new ChannelPlanDialog();
+    const dialog = new ChannelPlanDialog((mhz) => this.app.rhServer.pilotAt(mhz));
     document.body.append(dialog.el);
     edit.onclick = () => dialog.open(app.deviceSettings.channels, (channels) => void this.setChannels(channels));
 
@@ -168,13 +177,23 @@ export class PowerChannels implements View {
         key: el("span", { class: "key" }),
         name: el("span", {}),
         freq: el("div", { class: "freq" }),
+        pilot: el("div", { class: "pilot" }),
         main: el("div", { class: "power-main" }),
         sub: el("div", { class: "power-sub" }),
         kv: el("div", { class: "kv" }),
         badges: el("div", { class: "badges" }),
         toggle,
       };
-      t.root.append(el("div", { class: "name" }, t.key, t.name), el("label", { class: "switch" }, toggle), t.freq, t.main, t.sub, t.kv, t.badges);
+      t.root.append(
+        el("div", { class: "name" }, t.key, t.name),
+        el("label", { class: "switch" }, toggle),
+        t.freq,
+        t.pilot,
+        t.main,
+        t.sub,
+        t.kv,
+        t.badges,
+      );
       return t;
     });
     this.grid.replaceChildren(...this.tiles.map((t) => t.root));
@@ -202,9 +221,11 @@ export class PowerChannels implements View {
     const calibrated = calOffset(p.name, 5800) !== null;
     this.setNote(
       !calibrated
-        ? `This board (${p.name}) has no power calibration: power meter mode needs an ESP32-C5 board.`
+        ? t("This board ({name}) has no power calibration: power meter mode needs an ESP32-C5 board.", { name: p.name })
         : st && !ready
-          ? "The device is not set up for power measurement (gain, window or LO mode changed): switch modes in the menu to set it up again."
+          ? t(
+              "The device is not set up for power measurement (gain, window or LO mode changed): switch modes in the menu to set it up again.",
+            )
           : "",
     );
     const atten = this.app.settings.powerAttenDb;
@@ -219,6 +240,9 @@ export class PowerChannels implements View {
       tile.name.textContent = this.app.channelName(id);
       const mhz = Math.round(c.khz / 1000);
       tile.freq.textContent = `${mhz} MHz`;
+      const pilot = this.app.rhServer.pilotAt(c.khz / 1000);
+      tile.pilot.textContent = pilot?.label ?? "";
+      tile.pilot.title = pilot ? `${t("RotorHazard pilot")}: ${pilot.full}` : "";
       const cs = store.channels[id];
       const m = cs?.latest;
       const off = calOffset(p.name, mhz);
@@ -242,16 +266,16 @@ export class PowerChannels implements View {
       const noise = meanDb(cs.floor, nowS, smoothS, clip?.times);
       const sig = lessNoise(rssi, noise);
       const badges: [string, string][] = [];
-      if (now - cs.updated > 1000) badges.push(["stale", "warning"]);
+      if (now - cs.updated > 1000) badges.push([t("stale"), "warning"]);
       let input: number | null = null;
       if (over) {
         // The ADC clips (most of the window when averaging): the level means nothing.
         tile.main.replaceChildren("OVER");
         tile.sub.textContent = "";
-        badges.push(["clipping", "critical"]);
+        badges.push([t("clipping"), "critical"]);
       } else if (sig === null) {
         blank();
-        badges.push(["no signal", "warning"]);
+        badges.push([t("no signal"), "warning"]);
       } else {
         input = sig + off.db;
         const vtx = input + atten;
@@ -260,11 +284,11 @@ export class PowerChannels implements View {
         tile.sub.textContent = `${vtx.toFixed(1).replace("-", "−")} dBm`;
         if (input > INPUT_MAX_DBM) badges.push(["over range", "critical"]);
       }
-      if (!off.calibrated) badges.push(["uncalibrated", "serious"]);
+      if (!off.calibrated) badges.push([t("uncalibrated"), "serious"]);
       const kv: [string, string][] = [
-        ["at the board", input === null ? "—" : `${input.toFixed(1).replace("-", "−")} dBm`],
-        ["level", `${rssi.toFixed(1)} dBFS`],
-        ["noise", noise === null ? "—" : `${noise.toFixed(1)} dBFS`],
+        [t("at the board"), input === null ? "—" : `${input.toFixed(1).replace("-", "−")} dBm`],
+        [t("level"), `${rssi.toFixed(1)} dBFS`],
+        [t("noise"), noise === null ? "—" : `${noise.toFixed(1)} dBFS`],
       ];
       tile.kv.replaceChildren(...kv.flatMap(([k, v]) => [el("span", {}, k), el("span", {}, v)]));
       tile.badges.replaceChildren(...badges.map(([txt, cls]) => el("span", { class: `badge ${cls}` }, txt)));

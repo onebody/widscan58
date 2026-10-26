@@ -1,0 +1,17 @@
+{
+  "default": "official",
+  "versions": [
+    {
+      "id": "official",
+      "label": "Official release",
+      "ref": "upstream/main",
+      "note": "The firmware CapnBry/widscan58 publishes from its main branch."
+    },
+    {
+      "id": "rh-uart",
+      "label": "RotorHazard UART (experimental)",
+      "ref": "origin/main",
+      "note": "Adds a RotorHazard node on the C5-Zero's UART header (GP11/GP12); USB works as before. The C5-Zero's RGB LED lights while a signal is heard."
+    }
+  ]
+}

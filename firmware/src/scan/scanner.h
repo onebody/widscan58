@@ -5,6 +5,7 @@
 #include "planner.h"
 #include "profile.h"
 #include "radio.h"
+#include "link.h"
 
 typedef struct {
     const profile_t *profile;
@@ -59,6 +60,7 @@ void scanner_get_plan(plan_t *plan);
 typedef enum { SCAN_REQ_RAWIQ, SCAN_REQ_RECAL, SCAN_REQ_FFTEVAL_SYNTH, SCAN_REQ_FFTEVAL_LIVE } scan_req_type_t;
 typedef struct {
     scan_req_type_t type;
+    link_sink_t sink;        /* where the reply text goes; frames stay on USB */
     uint32_t lo_khz;
     uint16_t n;
     uint8_t rate_code;

@@ -18,13 +18,11 @@ export function registerServiceWorker() {
 }
 
 export interface OfflineStatus {
-  /** "Make firmware available offline" is on. */
+  /** "Make firmware available offline" is on for this firmware version. */
   wanted: boolean;
-  /** The firmware and the flasher's code are saved with this version of the app. */
+  /** This version's firmware and the flasher's code are saved with this version of the app. */
   saved: boolean;
-  /** The saved firmware's version. */
-  version: string | null;
-  /** The firmware files are on this device (saved, or kept from flashing). */
+  /** This version's firmware files are on this device (saved, or kept from flashing). */
   firmware: boolean;
 }
 
@@ -44,7 +42,8 @@ async function ask(msg: object): Promise<OfflineStatus | null> {
   return r;
 }
 
-export const offlineStatus = () => ask({ cmd: "status" });
+export const offlineStatus = (id: string) => ask({ cmd: "status", id });
 
-/** Turns "Make firmware available offline" on (downloads it now) or off (deletes it). */
-export const setOfflineFirmware = (on: boolean) => ask({ cmd: "offline", on });
+/** Turns "Make firmware available offline" on for a version (downloads it now)
+ *  or off (deletes it). */
+export const setOfflineFirmware = (on: boolean, id: string) => ask({ cmd: "offline", on, id });

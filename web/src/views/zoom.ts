@@ -2,6 +2,7 @@
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
 import { CHF } from "../proto/frames";
+import { t as tr } from "../i18n";
 import { axes, channelColor, drawGrid, el, prepare, theme } from "../util/canvas";
 import { composite } from "./panorama";
 
@@ -45,7 +46,10 @@ export class Zoom implements View {
     const half = search * 1.6;
     const f0 = ch.khz - half;
     const f1 = ch.khz + half;
-    this.title.textContent = `${app.channelName(id)} · ${(ch.khz / 1000).toFixed(3)} MHz`;
+    const pilot = app.rhServer.pilotAt(ch.khz / 1000);
+    this.title.textContent =
+      `${app.channelName(id)} · ${(ch.khz / 1000).toFixed(3)} MHz` + (pilot ? ` · ${pilot.label}` : "");
+    this.title.title = pilot ? `${tr("RotorHazard pilot")}: ${pilot.full}` : "";
     const a = axes(s, f0, f1, app.settings.dbMin, app.settings.dbMax, { top: 16 });
     const ctx = s.ctx;
     const t = theme();
@@ -157,10 +161,11 @@ export class Zoom implements View {
     ];
     this.readout.replaceChildren(
       ...items.map(([k, v]) => {
-        const sEl = el("span", { title: `${k} ${v}` });
+        const label = tr(k);
+        const sEl = el("span", { title: `${label} ${v}` });
         const b = el("b");
         b.textContent = v;
-        sEl.append(`${k} `, b);
+        sEl.append(`${label} `, b);
         return sEl;
       }),
     );
