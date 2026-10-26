@@ -9,10 +9,17 @@
 set -euo pipefail
 chip=${1:?chip}; ref=${2:?reference ref}; cand=${3:?candidate ref}
 objdump=${4:-}
+pick_objdump() { # newest candidate that actually runs on this host
+    local c
+    for c in $(ls -t "$@" 2>/dev/null); do
+        "$c" --version >/dev/null 2>&1 && { echo "$c"; return 0; }
+    done
+    echo "no runnable objdump among the given candidates" >&2; return 1
+}
 if [[ -z $objdump ]]; then
     case $chip in
-        esp32s3) objdump=$(ls ~/.platformio/packages/toolchain-xtensa-esp-elf*/bin/xtensa-esp32s3-elf-objdump | head -1) ;;
-        *) objdump=$(ls ~/.platformio/packages/toolchain-riscv32-esp*/bin/riscv32-esp-elf-objdump | head -1) ;;
+        esp32s3) objdump=$(pick_objdump ~/.platformio/packages/toolchain-xtensa-esp-elf*/bin/xtensa-esp32s3-elf-objdump) ;;
+        *) objdump=$(pick_objdump ~/.platformio/packages/toolchain-riscv32-esp*/bin/riscv32-esp-elf-objdump) ;;
     esac
 fi
 case $chip in

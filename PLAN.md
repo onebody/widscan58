@@ -29,9 +29,11 @@ only the radio backend and the profile differ.
 
 ## 1. What esp-sdr gives us (findings from reading the repo)
 
-Reference commit: `06a5ca4`. Both targets are pinned to ESP-IDF `25fe69f9…`
-(IDF **6.2.0-dev**, master 2026-07-11) in `firmware-targets.json`. The private PHY
-ABI they use only applies to the `libphy` shipped with that commit.
+Reference commit: `06a5ca4`. esp-sdr pins ESP-IDF `25fe69f9…` (6.2.0-dev,
+master 2026-07-11) for the private PHY ABI it uses. Widscan58 itself builds on
+pioarduino `55.03.312-1` (ESP-IDF 5.5.5); every PHY function `src/radio` calls
+must be instruction-identical between the two, and `tools/check_phy_abi.sh`
+verifies that — re-run it before changing the platform version.
 
 | Item | ESP32-C5 | ESP32-S3 |
 |---|---|---|
@@ -147,31 +149,33 @@ widscan58/
 ├── PLAN.md
 ├── LICENSE                      # GPL-3.0 text
 ├── README.md
-├── firmware/                    # one PlatformIO project, several envs (also builds with idf.py)
-│   ├── platformio.ini           # envs: esp32s3, esp32c5, testgen_s3, native (host tests)
+├── firmware/                    # one PlatformIO project, several envs
+│   ├── platformio.ini           # envs: esp32c5 (default), esp32s3, native (host tests)
 │   ├── CMakeLists.txt
-│   ├── sdkconfig.defaults       # shared
-│   ├── sdkconfig.defaults.esp32s3
-│   ├── sdkconfig.defaults.esp32c5
+│   ├── sdkconfig.defaults       # shared; sdkconfig.esp32c5 / .esp32s3 are generated
 │   ├── partitions.csv
+│   ├── versions.json            # firmware refs the Pages workflow publishes
 │   ├── src/
 │   │   ├── CMakeLists.txt       # per-target sources, --wrap flags, -T sram_guard.ld
 │   │   ├── idf_component.yml    # espressif/esp-dsp (pinned)
 │   │   ├── main.c
+│   │   ├── gpio_out.c           # boot-time GPIO outputs (GPIO SAVE)
+│   │   ├── status_led.c         # C5-Zero RGB LED
 │   │   ├── radio/               # the only target-specific code; derived from esp-sdr
 │   │   │   ├── radio.h          #   common backend interface (below)
-│   │   │   ├── c5/              #   chip.h, rx.c, recal.c, bandwidth.h, sram_guard.ld
-│   │   │   └── s3/              #   rx.c (register capture), recal.c, filter.c, sram_guard.ld, fft asm
-│   │   ├── dsp/                 # fft wrapper (portable Q15 / S3 SIMD), power_code.h, halfband.c
-│   │   ├── scan/                # profiles.c, planner.c, scanner.c, psd.c, metrics.c, calib.c, imd.c
-│   │   └── proto/               # proto.c, link.c
-│   ├── testgen/                 # separate app: test-tone transmitter for a spare ESP32
-│   └── test/                    # host unit tests: planner, metrics, profiles, encoder, IMD predictor
+│   │   │   ├── c5/              #   radio_c5.c, recal_c5.c, hot_iram.lf, sram_guard.ld
+│   │   │   └── s3/              #   radio_s3.c, recal_s3.c, s3_fft_rnd.S, sram_guard.ld
+│   │   ├── dsp/                 # psd.c (Welch, IQ correction), fft_eval.c, FFT tables
+│   │   ├── scan/                # profile.c, planner.c, scanner.c, metrics.c, lap.c
+│   │   └── proto/               # commands.c, link.c, rh.c, uart_link.c, frames.h
+│   └── test/                    # Unity host tests (test_dsp)
 ├── web/                         # Vite + TypeScript, static build
-│   └── src/{serial,proto,model,views,mock}/
+│   └── src/{serial,proto,model,views,mock,util}/
 └── tools/
     ├── widscan58cli.py          # pyserial client: dump frames, record, benchmarks
-    └── analyze_capture.py       # offline PSD / filter / alias / hop-time analysis
+    ├── rh_check.py              # RotorHazard node-protocol checker
+    ├── pages_firmware.py        # stage the versions.json builds for Pages
+    └── check_phy_abi.sh         # compare the PHY functions we call with IDF 5.5.5
 ```
 
 **Radio backend interface (`radio.h`)**. The scanner only ever calls these:

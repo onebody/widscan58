@@ -4,7 +4,7 @@
 第一次上手的图文教程不在这里，而在应用内：**⋯ → 使用帮助**（源文件
 `mobile/src/main/assets/help/index.html`，随 APK 一起打包，离线可读）。
 
-- 适用版本：`0.7-dev`（versionCode 7）
+- 适用版本：`0.8`（versionCode 8）
 - 运行要求：Android 8.0（API 26）及以上，手机支持 USB Host / OTG
 - 板卡：ESP32-C5 跑 widscan58 固件；原生 USB 是 Espressif USB-Serial/JTAG，
   VID `0x303A` / PID `0x1001`，枚举为 CDC-ACM

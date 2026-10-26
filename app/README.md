@@ -68,14 +68,14 @@ Then connect the board and grant the USB permission dialog. The app is in the
 | status line | profile, rotations/s, hops, gain, link fill, link name |
 | band chips | one tap puts a whole band (R/A/B/E/F/L) on the device; `Max`/`Avg` toggle the hold traces |
 | panorama | every LO segment stitched on a nearest-LO basis: live trace, max hold, average, per-bin noise floor, RSSI/search windows per channel, plan LO markers, board spurs |
-| waterfall | one row per completed scan rotation, newest at the top, scaled against the smoothed noise floor; 2 dp per row, so about 45 rotations of history on a phone |
+| waterfall | one row per completed scan rotation, newest at the top, scaled against the smoothed noise floor; one device pixel per row (up to 400), so a phone keeps minutes of history |
 | channel tiles | level (EMA when reported), bar over floor−10…floor+40 dB, SNR, floor, badges, 10 s sparkline |
-| bottom bar | Start/Stop, manual gain 0…63, Reset holds |
+| bottom bar | Start/Stop, manual gain (0…82, or the maximum the board reports), Reset holds |
 
-Tap the chart or a tile to select a channel. Long-press the chart fits the dB
-range to what is on screen (it is remembered). Until a plan arrives the tiles are
-hidden and the chart reads *Waiting for spectrum frames…* rather than showing a
-false empty sweep.
+Tap the chart to select a channel; tapping a tile opens that channel's zoom. Long-press
+the chart fits the dB range to what is on screen (it is remembered). Until a plan
+arrives the tiles are hidden and the chart reads *Waiting for spectrum frames…*
+rather than showing a false empty sweep.
 
 The portrait-only layout is deliberate: there is no landscape layout, and
 rotating would crush the panorama into a strip.
@@ -100,7 +100,7 @@ restarted, and the app runs the handshake again by itself.
 
 - `core/` — pure Kotlin/JVM: frame parser, CRC, stream resync, command runner,
   band plans, the store (segments, max hold, average, per-LO floor), panorama
-  compositing, waterfall rows, channel tiles. No `android.*` imports, 49 tests.
+  compositing, waterfall rows, channel tiles. No `android.*` imports, 209 tests.
 - `mobile/` — Android: USB CDC host (`usb/`), the JSON reply codec, preferences,
   the instrument screen and its canvas views.
 
@@ -109,12 +109,13 @@ bugs in this app were all found in `mobile/usb/`.
 
 ## Language
 
-Chinese is the default and English is the one translation: `res/values/` carries
-Chinese, `res/values-en/` English, so the app follows the system language and
-falls back to Chinese on a device set to anything else. On Android 13+ the
-system's per-app language picker offers both (`res/xml/locale_config.xml`).
-There is a Chinese edition of this document at
-[`README.zh-CN.md`](README.zh-CN.md).
+The app installs in Chinese. `res/values/` carries Chinese and `res/values-en/` the
+English translation; `⋯ → General settings` offers 中文, English and Follow system.
+With Follow system the phone decides, including Android 13+'s per-app language
+picker, which lists both (`res/xml/locale_config.xml`); a system language with no
+translation falls back to Chinese. Switching recreates the activity, so the USB
+link drops and re-handshakes, the same as a trip to the background. There is a
+Chinese edition of this document at [`README.zh-CN.md`](README.zh-CN.md).
 
 Unit symbols (`dBFS`, `MHz`, `SNR`), the band letters and the raw USB
 diagnostics — the probe screen and `UsbLinkException` messages — read the same in
@@ -134,23 +135,43 @@ It emits the same SPECTRUM / METRICS / TELEMETRY payloads the firmware does for 
 band of VTXs plus the board spurs, answers the band, gain and Start/Stop controls,
 and never touches the USB stack. Nothing else starts it.
 
-## Not in this version
+## Beyond the instrument screen
 
-Channel zoom, RSSI history pages, the channel-plan editor, RotorHazard mode,
-power-meter mode, RAW IQ capture, the diagnostics console, and record/replay. The
-log/probe screen is reachable as the **USB probe** launcher entry, for when the
-board shows up but not as a CDC port.
+The **⋯** menu opens the rest; most of these need the board on the cable:
+
+- **Channel zoom** — tap a channel tile for that channel's level, SNR, floor, peak,
+  occupied bandwidth and averaged occupancy.
+- **RSSI history** — every planned channel across the chosen span, with a drag
+  crosshair.
+- **Scanner telemetry** — the board's own counters, then a per-hop time breakdown.
+- **Protocol console** — send any firmware command and read both directions.
+- **GPIO configuration** — pins the board drives low or high from boot, such as an
+  antenna switch.
+- **Recording and export** — record the raw byte stream as `.widscan58`, replay it
+  here or in the web UI, export channel or spectrum CSV.
+- **Lap timing (RotorHazard)** — seats, thresholds, levels and the board's pass times.
+- **Power meter** — the attenuator in front of the VTX and per-channel power at the
+  board and at the VTX.
+- **Raw I/Q snapshot** — constellation, I/Q traces and spectrum of one capture.
+
+The channel plan editor is under **Scanner setup** → **Channel plan** → **Edit**; the
+lap timer and power meter pages carry their own copy. **Help** opens the bundled
+tutorial, and the launcher's **USB probe** entry still opens the log/probe screen
+for when the board shows up but not as a CDC port.
 
 ## Verification
 
-`:core:test` — 49 JVM tests over the frame codec, stream resync, command runner,
+`:core:test` — 209 JVM tests over the frame codec, stream resync, command runner,
 store, panorama compositing, waterfall rows and channel tiles.
 
 The UI was driven on an `arm64-v8a` emulator (Android 11, 1080x1920) against the
 simulated feed at 411x731 dp and, with `adb shell wm density 480`, at 360x640 dp.
-The language switch was checked the way a device does it — `settings put system
-system_locales` plus a reboot puts `[zh_CN]` in the activity's `mCurrentConfig` —
-not by renaming resource directories.
+The language picker was checked on the device: each of the three choices was
+stored and read back with `run-as`, the Chinese and English string sets were
+compared screen by screen, and the data-heavy pages (power meter, channel zoom,
+RAW IQ, lap timer) were laid out in English; a zh-CN phone with Follow system
+reads Chinese. Still open is a first launch on an English phone with no stored
+choice, where the code starts in Chinese and a real device has to confirm it.
 
 Against the board itself, over its CDC-ACM port: a 128 KiB capture decoded to 150
 SPECTRUM, 902 METRICS and 22 TELEMETRY frames with **zero CRC errors**, at the

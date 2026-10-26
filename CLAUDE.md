@@ -281,7 +281,9 @@ wiring and Pi setup in docs/RotorHazard.md).
   updates of a seat (~660 /s; R1–R8 ~1.96 ms, ~510 /s; `rh_check.py`'s
   `loop_time`, docs/RotorHazard.md). The default gain is manual 45, as in
   monitor mode (gain sweeps with a 25 mW VTX at 0.9 m, no antenna on the
-  board: PLAN.md, "Gain sweep"). `CONFIG SAVE` replaces the gain, FFT, metric, LO plan and level filter defaults (NVS blob `timer`, version 1, `commands.c`);
+  board: PLAN.md, "Gain sweep"). `CONFIG SAVE` replaces the gain, FFT, metric, plan
+  mode (GROUP/SINGLE, the web UI's "LO plan" control) and level filter defaults (NVS
+  blob `timer`, version 1, `commands.c`);
   they are applied on every switch to this mode.
 - **Two ports:** USB and the UART have separate line and write state and each
   port's replies go back to it; seats and levels are shared. The Pi's first
