@@ -5,6 +5,7 @@ import { smoothedSeries } from "../model/store";
 import { CHF } from "../proto/frames";
 import { channelColor, el, prepare, theme } from "../util/canvas";
 import { channelsCommand } from "../model/channelPlan";
+import { t as tr } from "../i18n";
 import { ChannelPlanDialog } from "./channelPlanDialog";
 
 interface Tile {
@@ -12,6 +13,7 @@ interface Tile {
   key: HTMLSpanElement;
   name: HTMLSpanElement;
   freq: HTMLDivElement;
+  pilot: HTMLDivElement;
   big: HTMLDivElement;
   bar: HTMLDivElement;
   kv: HTMLDivElement;
@@ -90,6 +92,7 @@ export class ChannelGrid implements View {
         key,
         name,
         freq: el("div", { class: "freq" }),
+        pilot: el("div", { class: "pilot" }),
         big: el("div", { class: "big" }),
         bar: el("div", { class: "bar" }, el("div")),
         kv: el("div", { class: "kv" }),
@@ -101,6 +104,7 @@ export class ChannelGrid implements View {
         el("div", { class: "name" }, key, name),
         el("label", { class: "switch" }, toggle),
         t.freq,
+        t.pilot,
         t.big,
         t.bar,
         t.kv,
@@ -121,14 +125,21 @@ export class ChannelGrid implements View {
     const store = this.app.store;
     const p = store.profile;
     if (!p) {
-      if (!this.tiles.length) this.grid.replaceChildren(el("div", { class: "empty" }, "Connect a device or start the simulator."));
+      if (!this.tiles.length)
+        this.grid.replaceChildren(el("div", { class: "empty" }, tr("Connect a device or start the simulator.")));
       return;
     }
     if (store.planKey !== this.planKey) this.build();
     const st = store.status;
     if (st)
       this.plan.textContent =
-        `${st.plan.length} hop${st.plan.length === 1 ? "" : "s"} per rotation · ` + (st.mode === "GROUP" ? "grouped LOs" : "one LO per channel");
+        st.plan.length === 1
+          ? tr(st.mode === "GROUP" ? "{n} hop per rotation · grouped LOs" : "{n} hop per rotation · one LO per channel", {
+              n: 1,
+            })
+          : tr(st.mode === "GROUP" ? "{n} hops per rotation · grouped LOs" : "{n} hops per rotation · one LO per channel", {
+              n: st.plan.length,
+            });
     const now = performance.now();
     const t = theme();
     p.channels.forEach((c, id) => {
@@ -141,6 +152,9 @@ export class ChannelGrid implements View {
       tile.key.style.background = channelColor(id);
       tile.name.textContent = this.app.channelName(id);
       tile.freq.textContent = `${Math.round(c.khz / 1000)} MHz`;
+      const pilot = this.app.rhServer.pilotAt(c.khz / 1000);
+      tile.pilot.textContent = pilot?.label ?? "";
+      tile.pilot.title = pilot ? `${tr("RotorHazard pilot")}: ${pilot.full}` : "";
       const m = cs?.latest;
       const stale = !!m && now - cs.updated > 1000;
       if (!m) {
@@ -177,8 +191,10 @@ export class ChannelGrid implements View {
         ["center", m.centroidOffHz === null ? "" : occ ? `${m.centroidOffHz >= 0 ? "+" : ""}${(m.centroidOffHz / 1000).toFixed(0)} kHz` : "—"],
         ["OBW 99 %", m.obwLoHz === null || m.obwHiHz === null ? "" : occ ? `${((m.obwHiHz - m.obwLoHz) / 1e6).toFixed(2)} MHz` : "—"],
       ];
-      tile.kv.replaceChildren(...rows.flatMap(([k, v]) => [el("span", {}, k), el("span", {}, v)]));
-      tile.badges.replaceChildren(...badgesFor(m.flags, stale, m.peak !== null).map(([txt, cls]) => el("span", { class: `badge ${cls}` }, txt)));
+      tile.kv.replaceChildren(...rows.flatMap(([k, v]) => [el("span", {}, tr(k)), el("span", {}, v)]));
+      tile.badges.replaceChildren(
+        ...badgesFor(m.flags, stale, m.peak !== null).map(([txt, cls]) => el("span", { class: `badge ${cls}` }, tr(txt))),
+      );
       // Sparkline: last 10 s of smoothed RSSI against the channel's floor.
       const s = prepare(tile.spark);
       const lo = floor - 5;

@@ -2,6 +2,7 @@
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
 import type { Segment } from "../model/store";
+import { t as tr } from "../i18n";
 import { axes, channelColor, drawGrid, el, prepare, seqLut, theme, type Axes } from "../util/canvas";
 
 /** Composite of all segments on a pixel grid; each point comes from the segment
@@ -197,7 +198,7 @@ export class Panorama implements View {
     if (!p || !store.segments.size) {
       s.ctx.fillStyle = theme().muted;
       s.ctx.font = "12px system-ui";
-      s.ctx.fillText("Waiting for spectrum frames…", 50, 40);
+      s.ctx.fillText(tr("Waiting for spectrum frames…"), 50, 40);
       return;
     }
     const t = theme();
@@ -305,13 +306,16 @@ export class Panorama implements View {
       return r;
     };
     const head = el("div", { class: "head" });
-    head.textContent = `${(khz / 1000).toFixed(3)} MHz${chId >= 0 ? ` · ${this.app.channelName(chId)}` : ""}`;
+    const pilot = this.app.rhServer.pilotAt(khz / 1000);
+    head.textContent = `${(khz / 1000).toFixed(3)} MHz${chId >= 0 ? ` · ${this.app.channelName(chId)}` : ""}${
+      pilot ? ` · ${pilot.label}` : ""
+    }`;
     this.tip.replaceChildren(
       head,
-      row(t.ink, fmt(comp.live[i]), "live"),
-      row(t.warning, fmt(comp.max[i]), "max hold"),
-      row(t.accent, fmt(comp.avg[i]), "average"),
-      row(t.muted, fmt(comp.floor[i]), "floor / bin"),
+      row(t.ink, fmt(comp.live[i]), tr("live")),
+      row(t.warning, fmt(comp.max[i]), tr("max hold")),
+      row(t.accent, fmt(comp.avg[i]), tr("average")),
+      row(t.muted, fmt(comp.floor[i]), tr("floor / bin")),
     );
     this.tip.style.display = "block";
     const w = this.tip.offsetWidth;

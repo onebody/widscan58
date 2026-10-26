@@ -5,6 +5,7 @@ import type { App, View } from "../model/app";
 import type { FastestRun } from "../model/laps";
 import { RH_SEATS, type RhSeat } from "../model/rh";
 import { levelDb, type RhMetric } from "../proto/rh";
+import { getLang, t as tr } from "../i18n";
 import { axes, channelColor, drawGrid, el, prepare, theme } from "../util/canvas";
 import { ChannelPlanDialog } from "./channelPlanDialog";
 import { RhEventsDialog } from "./rhEventsDialog";
@@ -28,6 +29,7 @@ interface SeatTile {
   root: HTMLElement;
   name: HTMLElement;
   freq: HTMLElement;
+  pilot: HTMLElement;
   big: HTMLElement;
   bar: HTMLElement;
   fill: HTMLElement;
@@ -43,6 +45,8 @@ export class RhSeats implements View {
   private grid = el("div", { class: "tiles" });
   private status = el("span", { class: "muted" });
   private tiles: SeatTile[] = [];
+  private captureTitles: { btn: HTMLButtonElement; which: "enter" | "exit" }[] = [];
+  private lang = getLang();
 
   constructor(private app: App) {
     const dialog = new ChannelPlanDialog();
@@ -73,12 +77,18 @@ export class RhSeats implements View {
     // "Now": the seat's average level over the last second, as RotorHazard's
     // capture buttons do (with the quad on the gate for EnterAt, away for ExitAt).
     const capture = (which: "enter" | "exit") => {
-      const b = el("button", { title: `Set ${which === "enter" ? "EnterAt" : "ExitAt"} to the average level of the last second` }, "now");
+      const whichName = which === "enter" ? "EnterAt" : "ExitAt";
+      const b = el(
+        "button",
+        { title: tr("Set {which} to the average level of the last second", { which: whichName }) },
+        "now",
+      );
       b.onclick = (e) => {
         e.stopPropagation();
         const v = app.rh.recentLevel(j);
         if (v !== null) void app.rh.setThreshold(j, which, v);
       };
+      this.captureTitles.push({ btn: b, which });
       return b;
     };
     const fill = el("div");
@@ -88,6 +98,7 @@ export class RhSeats implements View {
       root: el("div", { class: "tile rh-seat" }),
       name: el("span"),
       freq: el("div", { class: "freq" }),
+      pilot: el("div", { class: "pilot" }),
       big: el("div", { class: "big" }),
       bar: el("div", { class: "bar rh-bar" }, fill, enterMark, exitMark),
       fill,
@@ -101,6 +112,7 @@ export class RhSeats implements View {
     t.root.append(
       el("div", { class: "name" }, el("span", { class: "key", style: `background:${channelColor(j)}` }), t.name),
       t.freq,
+      t.pilot,
       t.big,
       t.bar,
       t.kv,
@@ -117,16 +129,26 @@ export class RhSeats implements View {
   render() {
     const rh = this.app.rh;
     const m = rh.metric;
+    if (getLang() !== this.lang) {
+      this.lang = getLang();
+      for (const { btn, which } of this.captureTitles)
+        btn.title = tr("Set {which} to the average level of the last second", {
+          which: which === "enter" ? "EnterAt" : "ExitAt",
+        });
+    }
     const active = rh.seats.filter((s) => s.channel).length;
     const hz = rh.seats.find((s) => s.channel && s.loopUs)?.loopUs;
     this.status.textContent = !this.app.device
-      ? "not connected"
+      ? tr("not connected")
       : rh.error
-        ? `error: ${rh.error}`
+        ? tr("error: {msg}", { msg: rh.error })
         : !rh.running
-          ? "not polling"
-          : `${active} seat${active === 1 ? "" : "s"} on · poll cycle ${rh.cycleMs.toFixed(0)} ms` +
-            (hz ? ` · ${(1e6 / hz).toFixed(0)} updates/s per seat` : "");
+          ? tr("not polling")
+          : tr(active === 1 ? "{n} seat on · poll cycle {ms} ms" : "{n} seats on · poll cycle {ms} ms", {
+              n: active,
+              ms: rh.cycleMs.toFixed(0),
+            }) +
+            (hz ? ` · ${tr("{hz} updates/s per seat", { hz: (1e6 / hz).toFixed(0) })}` : "");
     rh.seats.forEach((s, j) => this.renderTile(this.tiles[j], s, m));
   }
 
@@ -134,8 +156,11 @@ export class RhSeats implements View {
     t.root.classList.toggle("disabled", !s.channel);
     t.root.classList.toggle("crossing", s.crossing);
     t.root.classList.toggle("selected", this.app.settings.selected === s.index);
-    t.name.textContent = `Seat ${s.index + 1}${s.channel ? ` · ${s.channel}` : ""}`;
-    t.freq.textContent = s.channel ? `${s.mhz} MHz` : "off";
+    t.name.textContent = s.channel ? tr("Seat {n} · {ch}", { n: s.index + 1, ch: s.channel }) : tr("Seat {n}", { n: s.index + 1 });
+    t.freq.textContent = s.channel ? `${s.mhz} MHz` : tr("off");
+    const pilot = s.channel ? this.app.rhServer.pilotAt(s.mhz) : null;
+    t.pilot.textContent = pilot?.label ?? "";
+    t.pilot.title = pilot ? `${tr("RotorHazard pilot")}: ${pilot.full}` : "";
     if (s.level === null) t.big.replaceChildren("—");
     else t.big.replaceChildren(`${s.level}`, el("small", {}, ` ${levelDb(s.level, m).toFixed(1)} ${unit(m)}`));
     // Bar from below the lowest of nadir and ExitAt to above the highest of peak and EnterAt.
@@ -149,13 +174,13 @@ export class RhSeats implements View {
     const f = s.laps.fastest;
     const lr = this.app.rh.lapRules;
     const rows: [string, string, string?][] = [
-      ["laps", `${s.laps.passes}`],
-      ["last lap", s.laps.lastLapS === null ? "—" : `${s.laps.lastLapS.toFixed(3)} s`],
+      [tr("laps"), `${s.laps.passes}`],
+      [tr("last lap"), s.laps.lastLapS === null ? "—" : `${s.laps.lastLapS.toFixed(3)} s`],
       ...(lr.fastestOn
-        ? [[`fastest ${lr.count}`, f ? `${f.totalS.toFixed(3)} s` : "—", f ? lapList(f) : undefined] as [string, string, string?]]
+        ? [[tr("fastest {n}", { n: lr.count }), f ? `${f.totalS.toFixed(3)} s` : "—", f ? lapList(f) : undefined] as [string, string, string?]]
         : []),
-      ["pass peak", s.passPeak === null ? "—" : `${s.passPeak}`],
-      ["peak / nadir", s.nodePeak === null ? "—" : `${s.nodePeak} / ${s.nodeNadir ?? "—"}`],
+      [tr("pass peak"), s.passPeak === null ? "—" : `${s.passPeak}`],
+      [tr("peak / nadir"), s.nodePeak === null ? "—" : `${s.nodePeak} / ${s.nodeNadir ?? "—"}`],
     ];
     t.kv.replaceChildren(...rows.flatMap(([k, v, title]) => [el("span", {}, k), el("span", title ? { title } : {}, v)]));
     t.root.title = `EnterAt ${fmtLevel(s.enter, m)}, ExitAt ${fmtLevel(s.exit, m)}`;
@@ -277,7 +302,7 @@ export class RhGraph implements View {
     ctx.font = "10px system-ui";
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText(`level (${rh.metric === "RSSI" ? "dBFS = level / 4 − 63.75" : "dB = level / 4"})`, 2, 1);
+    ctx.fillText(tr(rh.metric === "RSSI" ? "level (dBFS = level / 4 − 63.75)" : "level (dB = level / 4)"), 2, 1);
   }
 }
 
@@ -306,7 +331,7 @@ export class RhEvents implements View {
   render() {
     const rh = this.app.rh;
     const { rhShowCrossings, rhShowFastest } = this.app.settings;
-    const key = `${rh.events.length} ${rhShowCrossings} ${rhShowFastest}`;
+    const key = `${getLang()} ${rh.events.length} ${rhShowCrossings} ${rhShowFastest}`;
     if (key === this.shown) return;
     this.shown = key;
     const t0 = performance.timeOrigin + this.app.store.t0;
@@ -317,14 +342,23 @@ export class RhEvents implements View {
       if (e.kind === "fastest" && !rhShowFastest) continue;
       const seat = rh.seats[e.seat];
       const time = new Date(t0 + e.t * 1000).toLocaleTimeString([], { hour12: false }) + `.${String(Math.floor((e.t * 1000) % 1000)).padStart(3, "0")}`;
-      const what =
-        e.kind === "pass"
-          ? `pass${e.ignoredS !== undefined ? ` · ignored (${e.ignoredS.toFixed(3)} s)` : e.lapS !== undefined ? ` · lap ${e.lapS.toFixed(3)} s` : ""}${e.peak ? ` · peak ${e.peak}` : ""}`
-          : e.kind === "fastest" && e.fastest
-            ? `fastest ${e.fastest.laps.length} · ${e.fastest.totalS.toFixed(3)} s${e.previous ? ` (was ${e.previous.totalS.toFixed(3)} s)` : ""}`
-            : e.kind === "enter"
-            ? `enter · ${e.level ?? ""}`
-            : `exit · ${e.level ?? ""}`;
+      let what: string;
+      if (e.kind === "pass") {
+        what =
+          e.ignoredS !== undefined
+            ? tr("pass · ignored ({s} s)", { s: e.ignoredS.toFixed(3) })
+            : e.lapS !== undefined
+              ? tr("pass · lap {s} s", { s: e.lapS.toFixed(3) })
+              : tr("pass");
+        if (e.peak) what += ` · ${tr("peak {p}", { p: e.peak })}`;
+      } else if (e.kind === "fastest" && e.fastest) {
+        what = tr(e.previous ? "fastest {n} · {s} s (was {p} s)" : "fastest {n} · {s} s", {
+          n: e.fastest.laps.length,
+          s: e.fastest.totalS.toFixed(3),
+          p: e.previous?.totalS.toFixed(3) ?? "",
+        });
+      } else if (e.kind === "enter") what = tr("enter · {level}", { level: e.level ?? "" });
+      else what = tr("exit · {level}", { level: e.level ?? "" });
       rows.push(
         el(
           "div",
@@ -335,7 +369,7 @@ export class RhEvents implements View {
         ),
       );
     }
-    this.list.replaceChildren(...(rows.length ? rows : [el("div", { class: "empty" }, "No passes yet")]));
+    this.list.replaceChildren(...(rows.length ? rows : [el("div", { class: "empty" }, tr("No passes yet"))]));
   }
 }
 
@@ -402,7 +436,13 @@ export class RhSettings implements View {
       this.filter.sync(c.level_filter ?? "MEDIAN"); // firmware before LEVELFILTER has only the median
     }
     const st = this.app.device?.rh?.stats;
-    this.stats.textContent = st ? `Link: ${st.reads} reads, ${st.writes} writes, ${st.errors} failed reads` : "";
+    this.stats.textContent = st
+      ? tr("Link: {reads} reads, {writes} writes, {failed} failed reads", {
+          reads: st.reads,
+          writes: st.writes,
+          failed: st.errors,
+        })
+      : "";
   }
 }
 

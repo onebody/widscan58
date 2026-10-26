@@ -69,7 +69,8 @@ Other ESP32-C5 boards work too, such as the C5 devkit.
 1. Plug the ESP32-C5 into your computer or Android phone over USB.
 2. Open the [web UI](https://capnbry.github.io/widscan58/) in Chrome, Edge or
    Firefox on desktop, or Chrome on Android.
-3. Click **Flash device** and follow the steps to install the firmware.
+3. Click **Flash device** and follow the steps to install the firmware; pick a
+   firmware version if the page offers more than one.
 4. Click **Connect device** and pick the board. Chrome remembers it, so next time
    it reconnects by itself.
 

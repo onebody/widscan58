@@ -3,6 +3,7 @@ import type { Device } from "../serial/device";
 import type { Store } from "./store";
 import { loadDeviceSettings, restoreCommands, saveDeviceSettings, type DeviceSettings } from "./channelPlan";
 import { RhModel } from "./rh";
+import { RhServer } from "./rhServer";
 
 export interface View {
   el: HTMLElement;
@@ -55,10 +56,13 @@ export class App {
   deviceSettings: DeviceSettings = loadDeviceSettings();
   /** RotorHazard mode: seats, polling and detection events. */
   rh: RhModel;
+  /** Race data from a RotorHazard server (pilot names on the channels). */
+  rhServer: RhServer;
   private listeners = new Set<() => void>();
 
   constructor(readonly store: Store) {
     this.rh = new RhModel(store);
+    this.rhServer = new RhServer(store);
     try {
       const saved = localStorage.getItem("widscan58.settings");
       if (saved) Object.assign(this.settings, JSON.parse(saved));

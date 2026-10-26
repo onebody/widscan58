@@ -147,6 +147,17 @@ a.menu-item { text-decoration: none; }
 .menu-switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; transition: left 0.12s; }
 .menu-switch input:checked { background: var(--accent); }
 .menu-switch input:checked::after { left: 15px; }
+.menu-language { justify-content: space-between; cursor: default; }
+.menu-select {
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 4px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.menu-note.err { color: var(--critical); }
 header.top h1 { font-size: 15px; margin: 0 8px 0 0; letter-spacing: 0.02em; }
 header.top .actions { grid-column: -2 / -1; display: flex; gap: 10px; }
 header.top .actions button { white-space: nowrap; }
@@ -200,6 +211,11 @@ header.top .actions button { white-space: nowrap; }
   .flash-versions td { grid-column: 2; }
   .flash-versions td + td { padding-bottom: 6px; }
 }
+/* The firmware version to flash; hidden when the page publishes only one. */
+.flash-dialog .flash-firmware { display: grid; gap: 2px; margin: 0 0 10px; font-size: 13px; color: var(--ink-2); }
+.flash-dialog .flash-firmware[hidden] { display: none; }
+.flash-dialog .flash-firmware select { width: 100%; color: var(--ink); }
+.flash-dialog .flash-firmware small { color: var(--muted); font-size: 11px; }
 .flash-progress progress { width: 100%; accent-color: var(--accent); }
 .flash-status { min-height: 1.4em; margin: 4px 0 8px; color: var(--ink-2); }
 .flash-status.ok { color: var(--good); }
@@ -245,6 +261,22 @@ header.top .actions button { white-space: nowrap; }
 .gpio-saved { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .gpio-unsaved { margin-top: 10px; padding: 6px 8px; border-radius: 6px; background: var(--surface-2); color: var(--warning); font-size: 12px; }
 .gpio-unsaved[hidden], .gpio-status[hidden] { display: none; }
+.rh-server-dialog p { margin: 0 0 8px; color: var(--ink-2); }
+.rh-server-url { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 8px; padding: 6px 0; }
+.rh-server-url input {
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+  padding: 4px 6px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.rh-server-state { margin-top: 4px; font-size: 12px; color: var(--ink-2); }
+.rh-server-state.err, .rh-server-error { color: var(--critical); }
+.rh-server-error { font-size: 11px; }
+.rh-server-error[hidden] { display: none; }
 .gpio-status { margin: 0 0 8px; color: var(--ink-2); }
 .gpio-status.err { color: var(--critical); }
 .options-dialog .rule-value input { padding: 2px 4px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -394,6 +426,15 @@ main {
 .tile .name { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .tile .name .key { width: 10px; height: 10px; border-radius: 3px; }
 .tile .freq { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tile .pilot {
+  min-height: 14px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tile .big { font-size: 22px; font-weight: 600; margin: 4px 0 2px; }
 .tile .big small { font-size: 11px; color: var(--muted); font-weight: 400; }
 .tile .bar { height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; margin: 4px 0; }

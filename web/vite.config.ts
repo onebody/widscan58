@@ -4,10 +4,11 @@ import { join, relative, resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
 
 // Writes dist/sw.js from sw.js with the build's files and a cache name from
-// their hash. FILES is the page itself: the public files and the entry's static
-// imports. FLASH_FILES is the rest: the firmware and the code only the flasher
-// loads (dynamic imports), fetched when flashing, or with the page when the
-// installed app keeps the firmware offline. Build only: the dev server has no
+// their hash. FILES is the page itself: the public files, firmware/index.json
+// (the versions the dialog offers) and the entry's static imports. FLASH_CODE
+// is the code only the flasher loads (dynamic imports). INDEX is the parsed
+// firmware/index.json, so the worker can find each version's files for the
+// "Make firmware available offline" option. Build only: the dev server has no
 // service worker.
 function pwaPlugin(): Plugin {
   let root = ".";
@@ -39,13 +40,18 @@ function pwaPlugin(): Plugin {
         .map((f) => relative(outDir, f).split("\\").join("/"))
         .filter((f) => f !== "sw.js")
         .sort();
-      const isPage = (f: string) => !f.startsWith("firmware/") && (!f.startsWith("assets/") || shell.has(f));
+      const isPage = (f: string) =>
+        f === "firmware/index.json" || (!f.startsWith("firmware/") && (!f.startsWith("assets/") || shell.has(f)));
       const hash = createHash("sha256");
       for (const f of all) hash.update(f).update(readFileSync(join(outDir, f)));
+      const index = all.includes("firmware/index.json")
+        ? JSON.stringify(JSON.parse(readFileSync(join(outDir, "firmware", "index.json"), "utf8")))
+        : "null";
       const head =
         `const CACHE = "widscan58-${hash.digest("hex").slice(0, 16)}";\n` +
         `const FILES = ${JSON.stringify(all.filter(isPage))};\n` +
-        `const FLASH_FILES = ${JSON.stringify(all.filter((f) => !isPage(f)))};\n`;
+        `const FLASH_CODE = ${JSON.stringify(all.filter((f) => !isPage(f) && !f.startsWith("firmware/")))};\n` +
+        `const INDEX = ${index};\n`;
       writeFileSync(join(outDir, "sw.js"), head + readFileSync(join(root, "sw.js"), "utf8"));
     },
   };

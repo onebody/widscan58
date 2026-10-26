@@ -30,13 +30,13 @@ keep that for anything new that is copied or derived from it.
 | `tools/widscan58cli.py` | Python client: `info`, `monitor`, `rawiq`, `spectrum`, `cmd`, `bootloader`. |
 | `tools/serial_bridge.py` | Serial ↔ WebSocket bridge (headless tests, remote viewing). |
 | `tools/flash.sh` | Build and flash with esptool (`--manual` after BOOT + EN; `RX_ENV=esp32c5` for the C5). Experimental, see the flashing notes. |
-| `tools/pages_firmware.py` | Stages the built firmware into `web/public/firmware` for the in-page flasher (used by CI). |
+| `tools/pages_firmware.py` | Stages a built firmware into `web/public/firmware/<id>/` for the in-page flasher: one version per entry in `firmware/versions.json`, then `index.json` (used by CI). |
 | `tools/check_phy_abi.sh` | Compares the private PHY functions we call between two ESP-IDF versions. |
 | `tools/ttyfix.py` | Leaves a serial port at VMIN=1 after pyserial use (see the Web UI "device has been lost" note). |
 | `tools/rh_check.py` | Runs RotorHazard's own node interface code (from `ref/RotorHazard`) against the board: discovery, seats, polling, passes, comm errors. |
 | `tools/powercal.py` | Power calibration (dBFS → dBm): sweeps a VTX (Betaflight MSP) over channels and power levels on an ImmersionRC RF Power Meter v2 and on the C5 at each gain, then fits the offset per gain and channel. |
 | `tools/gen_twiddle.py` | Generates `firmware/src/dsp/fft_twiddle_q15.h` for the radix-4 FFT. |
-| `.github/workflows/` | Builds firmware + web UI and publishes to GitHub Pages (https://capnbry.github.io/widscan58/). Only `esp32c5` firmware is published (`FW_ENVS`). |
+| `.github/workflows/` | Builds every firmware version in `firmware/versions.json` (each git ref in its own worktree) plus the web UI and publishes them to GitHub Pages (upstream: https://capnbry.github.io/widscan58/). Only `esp32c5` firmware is published (`FW_ENVS`). |
 | `images/` | Screenshots used by README.md. |
 | `ref/esp-sdr/` | Reference checkout of esp-sdr (not tracked here). Restore it with `git clone https://github.com/ESPARGOS/esp-sdr ref/esp-sdr`. |
 | `ref/RotorHazard/` | Reference checkout of RotorHazard for `tools/rh_check.py` (not tracked): `git clone https://github.com/RotorHazard/RotorHazard ref/RotorHazard`. Its license (MIT with no-AI-training terms) differs from ours: interoperate with it, don't copy its code. |
@@ -384,17 +384,18 @@ npm run dev                         # http://localhost:5173 (Web Serial: Chrome/
 - **Installable / offline** (PWA): `public/manifest.webmanifest`, icons from
   `public/icon.svg` and `icon-maskable.svg` (PNGs made with `rsvg-convert`,
   committed), `sw.js` and `src/util/pwa.ts`. The build (`vite.config.ts`,
-  `pwaPlugin`) writes `dist/sw.js` with the page's files (`FILES`: public files
-  and the entry's static imports), the rest (`FLASH_FILES`: the firmware and
-  the flasher's code, esptool-js and its chip stubs) and a cache name from a
-  hash of all of them, so a firmware-only deploy updates the app too.
-  `FLASH_FILES` are fetched when flashing (~1 MB) and kept for offline use
+  `pwaPlugin`) writes `dist/sw.js` with the page's files (`FILES`: public files,
+  `firmware/index.json` (the versions the dialog offers), and the entry's static
+  imports), the code only the flasher loads (`FLASH_CODE`: esptool-js and its
+  chip stubs), the parsed version index (`INDEX`) and a cache name from a hash
+  of all of them, so a firmware-only deploy updates the app too.
+  A version's parts are fetched when flashing (~1 MB) and kept for offline use
   until the next deploy. In the installed app (`isInstalledApp()`: display-mode
-  standalone etc.), the flash dialog has "Make firmware available offline": it
-  downloads them now and with every update (cache `…-fw`; the setting is the
-  `widscan58-prefs` cache, which the worker can read). Offline without the
-  firmware, the dialog says so and disables Flash; a download that fails while
-  flashing (`OfflineError`) says so too. Page loads are network first:
+  standalone etc.), the flash dialog has "Make firmware available offline" for
+  the selected version: it downloads it now and with every update (cache
+  `…-fw`; the `widscan58-prefs` cache remembers which version ids were asked
+  for). Offline without that version, the dialog says so and disables Flash; a
+  download that fails while flashing (`OfflineError`) says so too. Page loads are network first:
   `index.html` is fetched with `cache: "no-cache"` (Pages sends max-age=600)
   and a 3 s timeout (`NAV_TIMEOUT_MS`), the cached one only when that fails,
   so a deploy shows on the first load after it (it used to show on the second:
@@ -405,9 +406,19 @@ npm run dev                         # http://localhost:5173 (Web Serial: Chrome/
 - **Connect device**: Web Serial. Chrome, Edge, Firefox and Android Chrome all
   work, flashing included. Chrome remembers the grant, so later visits and
   board resets reconnect automatically.
-- **Flash device**: flashes the firmware the page was deployed with
-  (`web/src/serial/flasher.ts`; binaries come from `web/public/firmware`, staged
-  by CI, never committed).
+- **Firmware versions**: `firmware/versions.json` lists what the flash dialog
+  offers: an id (also its directory), label, note and git ref. CI builds each
+  ref in a worktree into `web/public/firmware/<id>/` and writes `index.json`.
+  To add one, add an entry (`origin/...` for a branch of the fork,
+  `upstream/...` for CapnBry's main), push the branch, then run the Pages
+  workflow by hand (Actions > Pages > Run workflow): a push to any branch but
+  main does not redeploy. Locally, build the ref in a worktree and stage it
+  with `tools/pages_firmware.py --id <id> --src <worktree> web/public/firmware
+  esp32c5`, then `tools/pages_firmware.py --index web/public/firmware`.
+- **Flash device**: flashes the firmware version the user picks
+  (`firmware/versions.json`: a label, note and git ref per version; CI builds
+  each ref into `web/public/firmware/<id>/`, never committed), through
+  `web/src/serial/flasher.ts`.
 - **Simulate**, or open `http://localhost:5173/?sim`: synthetic VTXs, Wi-Fi
   bursts, board spurs and IMD3 products. It simulates the C5 (`c5-race`:
   80 MS/s, whole-MHz LOs, the C5's measured spurs); `?sim=s3` simulates the

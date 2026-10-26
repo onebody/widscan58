@@ -1,8 +1,11 @@
-# Build the firmware and the web UI, and publish both to GitHub Pages. The page
-# flashes the firmware it was deployed with (web/src/serial/flasher.ts), so the
-# binaries never go into git. GPL-3.0-or-later.
+# Build the firmware versions listed in firmware/versions.json and the web UI,
+# and publish both to GitHub Pages. The page lets the user pick a version when
+# flashing (web/src/serial/flasher.ts), so the binaries never go into git.
+# GPL-3.0-or-later.
 #
 # One-time setup: Settings > Pages > Build and deployment > Source: GitHub Actions.
+# Refreshing only an experimental ref (pushing a branch other than main) needs
+# a manual run: Actions > Pages > Run workflow.
 name: Pages
 
 on:
@@ -23,6 +26,9 @@ env:
   # PlatformIO envs to publish. The S3 is held back until its USB flashing is
   # reliable; to add it, list it here and enable it in flasher.ts.
   FW_ENVS: esp32c5 # esp32s3
+  # versions.json refs: "origin/..." is this repository (the fork), and
+  # "upstream/..." is the project's own, fetched below.
+  UPSTREAM: https://github.com/CapnBry/widscan58.git
 
 jobs:
   build:
@@ -32,9 +38,10 @@ jobs:
         with:
           fetch-depth: 0 # tags, for git describe
 
-      - name: Firmware version
-        id: version
-        run: echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+      - name: Fetch the firmware refs
+        run: |
+          git fetch --no-tags origin '+refs/heads/*:refs/remotes/origin/*'
+          git fetch --no-tags "$UPSTREAM" '+refs/heads/main:refs/remotes/upstream/main'
 
       - uses: actions/setup-python@v7
         with:
@@ -51,13 +58,26 @@ jobs:
             !~/.platformio/.cache
           key: platformio-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini') }}
 
-      - name: Build firmware
+      # Each version is built in a worktree of its own ref, so the env and the
+      # version reported by INFO are the ref's, not this commit's. The staging
+      # tool is this commit's: the official ref predates it.
+      - name: Build the firmware versions
         run: |
+          set -euo pipefail
           pip install platformio
-          for env in $FW_ENVS; do pio run -d firmware -e "$env"; done
-
-      - name: Stage firmware for the flasher
-        run: tools/pages_firmware.py --version "${{ steps.version.outputs.version }}" web/public/firmware $FW_ENVS
+          rm -rf "$RUNNER_TEMP/fw" web/public/firmware
+          mkdir -p "$RUNNER_TEMP/fw" web/public/firmware
+          tools/pages_firmware.py --list | while IFS=$'\t' read -r id ref label note; do
+            echo "::group::$id"
+            git worktree add --detach -- "$RUNNER_TEMP/fw/$id" "$ref"
+            for env in $FW_ENVS; do
+              (cd "$RUNNER_TEMP/fw/$id/firmware" && pio run -e "$env")
+            done
+            tools/pages_firmware.py --id "$id" --src "$RUNNER_TEMP/fw/$id" --out web/public/firmware $FW_ENVS
+            git worktree remove --force "$RUNNER_TEMP/fw/$id"
+            echo "::endgroup::"
+          done
+          tools/pages_firmware.py --index web/public/firmware
 
       - uses: actions/setup-node@v7
         with:

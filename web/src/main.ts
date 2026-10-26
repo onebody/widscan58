@@ -12,6 +12,7 @@ import {
 } from "./serial/device";
 import { Recorder, ReplayTransport } from "./serial/recorder";
 import { MockTransport, type SimTarget } from "./mock/mockDevice";
+import { applyLang, getLang, setLang, t, type Lang } from "./i18n";
 import { el, invalidateTheme } from "./util/canvas";
 import { ChannelGrid } from "./views/channelGrid";
 import { Panorama } from "./views/panorama";
@@ -22,6 +23,7 @@ import { Controls } from "./views/controls";
 import { RawIqView } from "./views/rawiq";
 import { FlashDialog } from "./views/flashDialog";
 import { GpioDialog } from "./views/gpioDialog";
+import { RhServerDialog } from "./views/rhServerDialog";
 import { ScreenWake } from "./util/wakeLock";
 import { registerServiceWorker } from "./util/pwa";
 import { lapCallout, speak } from "./util/speech";
@@ -83,8 +85,13 @@ const modeItems = {
 };
 const rhNote = el("div", { class: "menu-note" });
 const gpioItem = el("button", { class: "menu-item", role: "menuitem", title: "Pins the device sets at startup" }, "GPIO Configure");
+const rhDataItem = el("button", { class: "menu-item", role: "menuitem" }, "RotorHazard race data…");
+const rhDataNote = el("div", { class: "menu-note", hidden: "" });
 const darkSwitch = el("input", { type: "checkbox", role: "switch" }) as HTMLInputElement;
 darkSwitch.checked = themeName !== "light";
+const langSelect = el("select", { class: "menu-select", "aria-label": "Language" }) as HTMLSelectElement;
+langSelect.append(new Option("English", "en"), new Option("中文", "zh"));
+langSelect.value = getLang();
 const fwValue = el("span", { class: "menu-value" }, "not connected");
 const fwNote = el("div", { class: "menu-note", hidden: "" }); // a newer firmware this page can flash
 const menu = el(
@@ -97,7 +104,10 @@ const menu = el(
   rhNote,
   el("div", { class: "menu-sep" }),
   gpioItem,
+  rhDataItem,
+  rhDataNote,
   el("label", { class: "menu-item menu-switch" }, el("span", {}, "Dark mode"), darkSwitch),
+  el("label", { class: "menu-item menu-language" }, el("span", {}, "Language"), langSelect),
   el("div", { class: "menu-sep" }),
   el("div", { class: "menu-label" }, "About"),
   el("a", { class: "menu-item", role: "menuitem", href: "https://github.com/CapnBry/widscan58", target: "_blank", rel: "noopener" }, "GitHub project ↗"),
@@ -161,9 +171,9 @@ function showPage() {
   const replay = app.readOnly && !!app.device;
   modeItems.rh.disabled = legacyFirmware || replay;
   rhNote.textContent = legacyFirmware
-    ? "This firmware has no RotorHazard mode: flash a newer one."
+    ? t("This firmware has no RotorHazard mode: flash a newer one.")
     : replay
-      ? "Replays are monitor mode only."
+      ? t("Replays are monitor mode only.")
       : "";
   rhNote.hidden = !rhNote.textContent;
   for (const v of views) v.drawn = -1;
@@ -228,6 +238,17 @@ gpioItem.onclick = () => {
   closeMenu();
   gpioDialog.open();
 };
+const rhServerDialog = new RhServerDialog(app);
+document.body.append(rhServerDialog.el);
+rhDataItem.onclick = () => {
+  closeMenu();
+  rhServerDialog.open();
+};
+langSelect.onchange = () => {
+  setLang(langSelect.value as Lang);
+  relabelChrome();
+  store.touch();
+};
 
 function closeMenu() {
   menu.hidden = true;
@@ -255,11 +276,17 @@ app.rh.onLap = (seat, lapS) => {
   if (app.settings.voiceOn && seat.channel) speak(lapCallout(seat.channel, lapS), voiceSettings(app.settings));
 };
 
-function setState(state: "off" | "ok" | "sim" | "err", text: string) {
+let connState: "off" | "ok" | "sim" | "err" = "off";
+let connKey = "Disconnected";
+let connParams: Record<string, string | number> | undefined;
+function setState(state: typeof connState, key: string, params?: Record<string, string | number>) {
+  connState = state;
+  connKey = key;
+  connParams = params;
   dot.className = `dot ${state === "off" ? "" : state}`;
-  connText.textContent = connText.title = text; // the title shows it in full when cut short
+  connText.textContent = connText.title = t(key, params); // the title shows it in full when cut short
   const connected = state === "ok" || state === "sim";
-  connectBtn.textContent = connected ? "Disconnect" : "Connect";
+  connectBtn.textContent = connected ? t("Disconnect") : t("Connect");
   connectBtn.classList.toggle("primary", !connected);
   simBtn.disabled = connected;
   replayBtn.disabled = connected;
@@ -267,22 +294,60 @@ function setState(state: "off" | "ok" | "sim" | "err", text: string) {
   syncWake();
 }
 
+/** Re-apply the texts that main.ts writes outside a view's render. */
+function relabelChrome() {
+  setState(connState, connKey, connParams);
+  showPage(); // also updates the banner and firmware text
+  syncRhDataNote();
+  if (recorder.active) recordBtn.textContent = t("■ Stop recording");
+}
+
+/** The RotorHazard server's state in the menu, when the name overlay is on. */
+function syncRhDataNote() {
+  const s = app.rhServer;
+  let text = "";
+  if (s.on) {
+    if (s.status === "error") text = t("RH: {msg}", { msg: s.errorText() ?? "" });
+    else if (s.status === "loading") text = t("Reading…");
+    else if (s.status === "waiting") text = t("RH: {msg}", { msg: t("Set the server address.") });
+    else if (s.status === "ok" && s.snapshot) {
+      const snap = s.snapshot;
+      if (snap.practice) text = t("RH: practice · no pilots");
+      else {
+        const heat = snap.heatName || t("Heat {n}", { n: snap.heatId });
+        text = snap.byMhz.size
+          ? t("RH: {heat} · {n} pilots", { heat, n: snap.byMhz.size })
+          : t("RH: {heat} · no pilots", { heat });
+      }
+    }
+  }
+  rhDataNote.textContent = text;
+  rhDataNote.hidden = !text;
+  rhDataNote.classList.toggle("err", s.status === "error");
+}
+
 function updateBanner() {
   const p = store.profile;
   const parts: (Node | string)[] = [];
   const add = (strong: string, rest: string) => parts.push(el("strong", {}, strong), ` ${rest} `);
-  if (app.device?.transport instanceof MockTransport) add("Simulated device.", "Signals, spurs and IMD products are synthetic.");
+  if (app.device?.transport instanceof MockTransport)
+    add(t("Simulated device."), t("Signals, spurs and IMD products are synthetic."));
   if (app.settings.uiMode === "rh" && app.device)
     add(
-      "RotorHazard mode.",
-      "This page polls the device as a RotorHazard server would. Disconnect before a RotorHazard server opens the port.",
+      t("RotorHazard mode."),
+      t(
+        "This page polls the device as a RotorHazard server would. Disconnect before a RotorHazard server opens the port.",
+      ),
     );
-  if (app.readOnly) add("Replay.", "Controls are disabled.");
+  if (app.readOnly) add(t("Replay."), t("Controls are disabled."));
   if (p && p.scale !== 1)
     add(
       `${p.name}:`,
-      `Raceband scaled into ${p.band_khz[0] / 1000}–${p.band_khz[1] / 1000} MHz (k = ${p.scale.toFixed(4)}). ` +
-        "Widths and windows are scaled by k.",
+      t("Raceband scaled into {lo}–{hi} MHz (k = {k}). Widths and windows are scaled by k.", {
+        lo: p.band_khz[0] / 1000,
+        hi: p.band_khz[1] / 1000,
+        k: p.scale.toFixed(4),
+      }),
     );
   banner.replaceChildren(...parts);
   banner.style.display = parts.length ? "block" : "none";
@@ -291,14 +356,18 @@ function updateBanner() {
 
 // The firmware version (INFO, parseInfo) is shown in the menu for any
 // connected device; the offer of another version only over Web Serial, where
-// the page can flash it.
-let offeredFw: string | null = null;
+// the page can flash it. The page offers several versions
+// (firmware/versions.json); a board running any of them is up to date.
+let offeredFws: string[] = [];
 function updateFirmwareText() {
   const fw = app.device ? parseInfo(store.info)?.version : undefined;
-  const value = !app.device ? "not connected" : fw || "unknown";
+  const value = !app.device ? t("not connected") : fw || t("unknown");
   if (fwValue.textContent !== value) fwValue.textContent = value;
-  const offer = fw && offeredFw && offeredFw !== fw && app.device?.transport instanceof WebSerialTransport;
-  const note = offer ? `${offeredFw} available` : "";
+  const offer =
+    fw && offeredFws.length && !offeredFws.includes(fw) && app.device?.transport instanceof WebSerialTransport
+      ? offeredFws[0]
+      : null;
+  const note = offer ? t("{v} available", { v: offer }) : "";
   if (fwNote.textContent !== note) fwNote.textContent = note;
   fwNote.hidden = !note;
 }
@@ -360,7 +429,8 @@ async function connect(transport: Transport, readOnly = false) {
     store.addLog("info", `connection closed: ${why}`);
     if (app.device === device) {
       app.device = null;
-      setState(why === "replay finished" ? "off" : "err", why === "replay finished" ? "Replay finished" : `Disconnected (${why})`);
+      if (why === "replay finished") setState("off", "Replay finished");
+      else setState("err", "Disconnected ({why})", { why });
       stopRecording();
     }
   };
@@ -368,7 +438,7 @@ async function connect(transport: Transport, readOnly = false) {
     await device.open();
   } catch (e) {
     store.addLog("error", `open failed: ${(e as Error).message}`);
-    setState("err", `Connection failed (${(e as Error).message})`);
+    setState("err", "Connection failed ({why})", { why: (e as Error).message });
     return;
   }
   app.device = device;
@@ -456,8 +526,8 @@ flashBtn.onclick = () => {
   }
   flashDialog.open();
 };
-void flashDialog.offeredVersion().then((v) => {
-  offeredFw = v;
+void flashDialog.offeredVersions().then((vs) => {
+  offeredFws = vs;
   updateFirmwareText();
 });
 
@@ -468,7 +538,7 @@ function stopRecording() {
   const a = el("a", { href: URL.createObjectURL(blob), download: `session-${new Date().toISOString().replace(/[:.]/g, "-")}.widscan58` });
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-  recordBtn.textContent = "● Record";
+  recordBtn.textContent = t("● Record");
   recordBtn.classList.remove("on");
   store.addLog("info", "recording saved");
 }
@@ -479,7 +549,7 @@ recordBtn.onclick = () => {
   if (store.status) pre.push(`STATUS ${JSON.stringify(store.status)}`);
   if (store.spursKhz.length) pre.push(`SPURS ${store.spursKhz.length} ${store.spursKhz.join(" ")}`);
   recorder.begin(pre);
-  recordBtn.textContent = "■ Stop recording";
+  recordBtn.textContent = t("■ Stop recording");
   recordBtn.classList.add("on");
 };
 
@@ -508,8 +578,11 @@ else if (WebSerialTransport.supported()) {
 }
 
 store.subscribe(() => updateBanner());
+store.subscribe(syncRhDataNote);
+applyLang();
 setState("off", "Disconnected");
 showPage();
+syncRhDataNote();
 
 // The firmware boots silent (RotorHazard mode). In monitor mode telemetry
 // arrives at 4 Hz even when scanning is stopped, so a quiet link means the

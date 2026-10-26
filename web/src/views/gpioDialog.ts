@@ -4,6 +4,7 @@
 // Each pin shows its setting, not its live level. GPL-3.0-or-later.
 import type { App } from "../model/app";
 import { gpioUnsaved, parseGpio, type GpioPin, type GpioSetting } from "../model/gpio";
+import { t } from "../i18n";
 import { el } from "../util/canvas";
 
 const LABEL: Record<GpioSetting, string> = { NONE: "Not used", LOW: "Low", HIGH: "High", RESERVED: "Reserved" };
@@ -56,7 +57,7 @@ export class GpioDialog {
   private async run(cmds: string[]) {
     if (!this.app.device || this.app.readOnly) {
       this.pins = [];
-      this.setStatus("Connect a device to configure its GPIOs.");
+      this.setStatus(t("Connect a device to configure its GPIOs."));
       return this.sync();
     }
     this.busy = true;
@@ -64,7 +65,7 @@ export class GpioDialog {
     try {
       for (const c of cmds) if ((await this.app.send(c)) === null) throw new Error(`${c} failed`);
       const reply = await this.app.send("GPIO?");
-      if (reply === null) throw new Error("This firmware has no GPIO configuration: flash a newer one.");
+      if (reply === null) throw new Error(t("This firmware has no GPIO configuration: flash a newer one."));
       this.pins = parseGpio(reply);
       this.setStatus("");
     } catch (e) {
@@ -91,10 +92,15 @@ export class GpioDialog {
   private row(p: GpioPin): HTMLElement {
     const name = el("span", { class: "gpio-name" }, `GPIO ${p.n}`);
     if (p.active === "RESERVED")
-      return el("div", { class: "gpio-row reserved", title: "Used by the flash or USB" }, name, el("span", { class: "gpio-reserved" }, "Flash / USB"));
+      return el(
+        "div",
+        { class: "gpio-row reserved", title: t("Used by the flash or USB") },
+        name,
+        el("span", { class: "gpio-reserved" }, t("Flash / USB")),
+      );
     const seg = el("span", { class: "seg" });
     for (const s of CHOICES) {
-      const b = el("button", {}, LABEL[s]) as HTMLButtonElement;
+      const b = el("button", {}, t(LABEL[s])) as HTMLButtonElement;
       b.classList.toggle("on", s === p.active);
       b.disabled = this.busy;
       b.onclick = () => {
@@ -108,7 +114,7 @@ export class GpioDialog {
       { class: `gpio-row${changed ? " changed" : ""}` },
       name,
       seg,
-      el("span", { class: "gpio-saved" }, changed ? `saved: ${LABEL[p.saved]}` : ""),
+      el("span", { class: "gpio-saved" }, changed ? t("saved: {state}", { state: t(LABEL[p.saved]) }) : ""),
     );
   }
 }

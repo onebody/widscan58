@@ -7,8 +7,9 @@ plugins or changes, only the serial port in its config.
 
 ## Installation
 
-1. Open https://capnbry.github.io/widscan58/ in a web browser, plug in the
-   ESP32-C5 board and click **Flash device**.
+1. Open a Widscan58 web flasher page, plug in the ESP32-C5 board and click
+   **Flash device**; if the page offers several firmware versions, pick
+   **RotorHazard UART (experimental)**.
 2. Click **Connect device**, open the menu (☰, top left) and pick
    **RotorHazard mode**. The firmware also boots in this mode.
 3. Under **Receiver**, set the RX gain, pick the level the seats report and

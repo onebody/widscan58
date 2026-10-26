@@ -3,6 +3,7 @@
 // ones a band x channel grid. Both edit the same selection.
 // GPL-3.0-or-later.
 import { BANDS, MAX_CHANNELS, normalizePlan, type Band } from "../model/channelPlan";
+import { t } from "../i18n";
 import { el } from "../util/canvas";
 
 // Spectrum view sections, each with its own axis (MHz) at the same scale
@@ -33,6 +34,8 @@ export class ChannelPlanDialog {
   private gridScroll = el("div", { class: "plan-scroll" });
   private gridWrap = el("div", { class: "plan-scroll-wrap plan-grid-view" }, this.gridScroll);
   private count = el("span", { class: "plan-count" });
+  private intro = el("p");
+  private bandTitles: { btn: HTMLButtonElement; band: string }[] = [];
   private okBtn = el("button", { class: "primary", autofocus: "" }, "OK");
   private onOk: (channels: string[]) => void = () => {};
 
@@ -55,27 +58,41 @@ export class ChannelPlanDialog {
       "dialog",
       { class: "plan-dialog" },
       el("h2", {}, "Channels to scan"),
-      el("p", {}, `Select up to ${MAX_CHANNELS} channels. Click a band name to select all eight of its channels.`),
+      this.intro,
       this.buildSpectrum(),
       this.gridWrap,
       el("div", { class: "plan-buttons" }, clearBtn, this.count, el("span", { class: "spacer" }), cancelBtn, this.okBtn),
     );
+    this.setIntro();
+  }
+
+  private setIntro() {
+    this.intro.textContent = t("Select up to {n} channels. Click a band name to select all eight of its channels.", {
+      n: MAX_CHANNELS,
+    });
   }
 
   open(current: string[], onOk: (channels: string[]) => void) {
     this.selected = new Set(current);
     this.onOk = onOk;
+    this.setIntro();
     this.sync();
     this.el.showModal();
     this.syncScrollFade();
   }
 
   private bandButton(b: Band): HTMLButtonElement {
-    const btn = el("button", { class: "plan-band", title: `Select all of ${b.name} (replaces the selection)` }, el("b", {}, b.letter), el("span", {}, b.name));
+    const btn = el(
+      "button",
+      { class: "plan-band", title: t("Select all of {band} (replaces the selection)", { band: b.name }) },
+      el("b", {}, b.letter),
+      el("span", {}, b.name),
+    );
     btn.onclick = () => {
       this.selected = new Set(b.mhz.map((_, j) => `${b.letter}${j + 1}`));
       this.sync();
     };
+    this.bandTitles.push({ btn, band: b.name });
     return btn;
   }
 
@@ -147,6 +164,8 @@ export class ChannelPlanDialog {
 
   private sync() {
     const full = this.selected.size >= MAX_CHANNELS;
+    for (const { btn, band } of this.bandTitles)
+      btn.title = t("Select all of {band} (replaces the selection)", { band });
     for (const { name, btn } of this.controls) {
       const on = this.selected.has(name);
       btn.classList.toggle("on", on);
@@ -159,7 +178,8 @@ export class ChannelPlanDialog {
       s.guides.replaceChildren(
         ...picked.filter((c) => s.names.has(c.name)).map((c) => el("div", { class: "spec-guide", style: `left:${pct(s, c.mhz!)}%` })),
       );
-    this.count.textContent = `${this.selected.size} of ${MAX_CHANNELS} selected` + (full ? " (maximum)" : "");
+    this.count.textContent =
+      t("{n} of {max} selected", { n: this.selected.size, max: MAX_CHANNELS }) + (full ? ` ${t("(maximum)")}` : "");
     this.okBtn.disabled = this.selected.size === 0;
   }
 

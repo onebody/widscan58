@@ -3,6 +3,7 @@
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
 import type { Status } from "../proto/frames";
+import { getLang, t } from "../i18n";
 import { el } from "../util/canvas";
 
 type Sync = (st: Status) => void;
@@ -13,10 +14,19 @@ export class Controls implements View {
   private shownStatus: Status | null = null;
   private lastDisabled: boolean | null = null;
   private body = el("div", { class: "controls" });
+  private displayCtl: HTMLElement | null = null;
+  private capSel: HTMLSelectElement | null = null;
+  private binsSel: HTMLSelectElement | null = null;
+  private lang = getLang();
 
   constructor(private app: App) {
     this.el = el("section", { class: "card span-6" }, el("h2", {}, "Scanner controls"), this.body);
     this.build();
+  }
+
+  private relabelOptions() {
+    if (this.capSel) for (const o of this.capSel.options) o.textContent = t("{n} samples", { n: Number(o.value) });
+    if (this.binsSel) for (const o of this.binsSel.options) o.textContent = t("{n} bins", { n: Number(o.value) });
   }
 
   private async apply(cmd: string) {
@@ -101,8 +111,9 @@ export class Controls implements View {
     for (const v of [64, 128, 256, 512, 1024, 2048]) fftSel.append(new Option(`${v}-pt FFT`, String(v)));
     fftSel.onchange = () => void this.apply(`FFT ${fftSel.value}`);
     const capSel = el("select") as HTMLSelectElement;
-    for (const v of [256, 512, 1024, 2048, 4096, 8192, 16380]) capSel.append(new Option(`${v} samples`, String(v)));
+    for (const v of [256, 512, 1024, 2048, 4096, 8192, 16380]) capSel.append(new Option(t("{n} samples", { n: v }), String(v)));
     capSel.onchange = () => void this.apply(`CAPN ${capSel.value}`);
+    this.capSel = capSel;
     const segs = this.num(1, 64, 1, 56);
     segs.onchange = () => void this.apply(`SEGMENTS ${segs.value}`);
     this.ctl("Capture & Welch PSD (segments = max FFTs averaged)", capSel, fftSel, segs);
@@ -141,7 +152,8 @@ export class Controls implements View {
     // Display spectrum
     const every = this.num(0, 255, 1, 56);
     const bins = el("select") as HTMLSelectElement;
-    for (const v of [64, 128, 256, 512, 1024]) bins.append(new Option(`${v} bins`, String(v)));
+    for (const v of [64, 128, 256, 512, 1024]) bins.append(new Option(t("{n} bins", { n: v }), String(v)));
+    this.binsSel = bins;
     const span = this.num(100, 40000, 100, 80);
     const det = el("select") as HTMLSelectElement;
     det.append(new Option("max", "MAX"), new Option("mean", "MEAN"));
@@ -215,29 +227,32 @@ export class Controls implements View {
       dmin.value = String(app.settings.dbMin);
       dmax.value = String(app.settings.dbMax);
     });
-    this.ctl("Display dB range (UI only)", dmin, dmax);
+    this.displayCtl = this.ctl("Display dB range (UI only)", dmin, dmax);
     // System
     const reboot = el("button", {}, "Reboot");
     reboot.onclick = () => {
-      if (confirm("Reboot the device?")) void app.send("REBOOT");
+      if (confirm(t("Reboot the device?"))) void app.send("REBOOT");
     };
     const boot = el("button", { class: "danger" }, "Reboot to bootloader");
     boot.onclick = () => {
-      if (confirm("Reboot into the ROM download mode? The scanner stops until the device is reflashed or reset."))
+      if (confirm(t("Reboot into the ROM download mode? The scanner stops until the device is reflashed or reset.")))
         void app.send("BOOTLOADER");
     };
     this.ctl("Device", reboot, boot);
   }
 
   render() {
+    if (getLang() !== this.lang) {
+      this.lang = getLang();
+      this.relabelOptions();
+    }
     const st = this.app.store.status;
     const disabled = !this.app.device || this.app.readOnly;
     if (disabled !== this.lastDisabled) {
       this.lastDisabled = disabled;
       this.shownStatus = null; // re-sync per-control states after enabling
       this.body.querySelectorAll("button, input, select").forEach((e) => {
-        const ctlLabel = e.closest(".ctl")?.querySelector("label")?.textContent ?? "";
-        if (!ctlLabel.startsWith("Display dB")) (e as HTMLInputElement).disabled = disabled;
+        if (e.closest(".ctl") !== this.displayCtl) (e as HTMLInputElement).disabled = disabled;
       });
     }
     if (!st || st === this.shownStatus || disabled) return;

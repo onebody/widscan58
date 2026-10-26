@@ -1,6 +1,7 @@
 // Raw I/Q snapshot tool: constellation, time trace, client-side FFT.
 // GPL-3.0-or-later.
 import type { App, View } from "../model/app";
+import { getLang, t as tr } from "../i18n";
 import { axes, drawGrid, el, prepare, theme } from "../util/canvas";
 
 function fft(re: Float64Array, im: Float64Array) {
@@ -42,9 +43,10 @@ export class RawIqView implements View {
   private shownTheme = "";
   private lo = el("input", { type: "number", step: "1", style: "width:110px" }) as HTMLInputElement;
   private n = el("select") as HTMLSelectElement;
+  private lang = getLang();
 
   constructor(private app: App) {
-    for (const v of [1024, 4096, 8192, 16380]) this.n.append(new Option(`${v} samples`, String(v)));
+    for (const v of [1024, 4096, 8192, 16380]) this.n.append(new Option(tr("{n} samples", { n: v }), String(v)));
     this.n.value = "8192";
     const fromSel = el("button", {}, "Use selected channel's LO");
     fromSel.onclick = () => {
@@ -83,6 +85,10 @@ export class RawIqView implements View {
   }
 
   render() {
+    if (getLang() !== this.lang) {
+      this.lang = getLang();
+      for (const o of this.n.options) o.textContent = tr("{n} samples", { n: Number(o.value) });
+    }
     this.limitSamples();
     const r = this.app.store.rawiq;
     const themeKey = theme().ink;
@@ -95,7 +101,7 @@ export class RawIqView implements View {
         const s = prepare(this.constel);
         s.ctx.fillStyle = theme().muted;
         s.ctx.font = "12px system-ui";
-        s.ctx.fillText("Capture a snapshot to inspect raw samples.", 10, 24);
+        s.ctx.fillText(tr("Capture a snapshot to inspect raw samples."), 10, 24);
       }
       return;
     }
@@ -115,7 +121,20 @@ export class RawIqView implements View {
     for (let j = 0; j < r.n; j++) pw += (r.i[j] - mi) ** 2 + (r.q[j] - mq) ** 2;
     const rms = Math.sqrt(pw / r.n);
     const lsb = 2 ** r.shift; // 10-bit ADC counts per transferred count
-    this.info.textContent = `LO ${(r.loKhz / 1000).toFixed(3)} MHz · ${r.rateHz / 1e6} MS/s · ${r.n} samples · scale ×${lsb} (10-bit counts) · DC (${(mi * lsb).toFixed(1)}, ${(mq * lsb).toFixed(1)}) · RMS ${(rms * lsb).toFixed(1)} · peak ${peak * lsb}/512${r.conjugated ? " · conjugated" : ""}`;
+    this.info.textContent = tr(
+      "LO {lo} MHz · {rate} MS/s · {n} samples · scale ×{scale} (10-bit counts) · DC ({dci}, {dcq}) · RMS {rms} · peak {peak}/512{conj}",
+      {
+        lo: (r.loKhz / 1000).toFixed(3),
+        rate: r.rateHz / 1e6,
+        n: r.n,
+        scale: lsb,
+        dci: (mi * lsb).toFixed(1),
+        dcq: (mq * lsb).toFixed(1),
+        rms: (rms * lsb).toFixed(1),
+        peak: peak * lsb,
+        conj: r.conjugated ? tr(" · conjugated") : "",
+      },
+    );
 
     // Constellation (density-ish via low alpha points).
     {
@@ -141,7 +160,7 @@ export class RawIqView implements View {
       s.ctx.fillStyle = t.muted;
       s.ctx.font = "10px system-ui";
       s.ctx.textAlign = "left";
-      s.ctx.fillText(`I/Q constellation · ±${range} transferred counts`, 4, 12);
+      s.ctx.fillText(tr("I/Q constellation · ±{range} transferred counts", { range }), 4, 12);
     }
     // Time trace of the first 400 samples.
     {
@@ -169,7 +188,7 @@ export class RawIqView implements View {
       s.ctx.font = "10px system-ui";
       s.ctx.textBaseline = "top";
       s.ctx.textAlign = "left";
-      s.ctx.fillText("I (blue) · Q (orange), transferred counts", 2, 1);
+      s.ctx.fillText(tr("I (blue) · Q (orange), transferred counts"), 2, 1);
     }
     // Spectrum: averaged 1024-point Hann FFTs, absolute frequency axis.
     {
@@ -211,7 +230,7 @@ export class RawIqView implements View {
       s.ctx.font = "10px system-ui";
       s.ctx.textBaseline = "top";
       s.ctx.textAlign = "left";
-      s.ctx.fillText(`dBFS/bin · full ${r.rateHz / 1e6} MHz capture span · MHz`, 2, 1);
+      s.ctx.fillText(tr("dBFS/bin · full {rate} MHz capture span · MHz", { rate: r.rateHz / 1e6 }), 2, 1);
     }
   }
 }
