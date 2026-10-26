@@ -667,10 +667,12 @@ static void commands_task(void *arg) {
         int64_t now = esp_timer_get_time();
         xSemaphoreTake(cmd_lock, portMAX_DELAY);
         if (n <= 0) {
-            if (proto == PROTO_MONITOR && p->probe) {
-                p->probe = false;
-                set_proto(PROTO_RH);
-                rh_rx(sink, RH_REVISION_CODE, now);
+            if (p->probe) {
+                p->probe = false; /* also when the other port changed the protocol meanwhile */
+                if (proto == PROTO_MONITOR) {
+                    set_proto(PROTO_RH);
+                    rh_rx(sink, RH_REVISION_CODE, now);
+                }
             }
             rh_poll(now);
             if (p->text && now - p->text_start > TEXT_TIMEOUT_US) {
