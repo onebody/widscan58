@@ -61,8 +61,9 @@
     <string name="set_none">全不选</string>
 
     <string name="plan_title">选择扫描频道</string>
-    <string name="plan_hint">最多 8 个频道；点波段名可一次选中该波段全部 8 个。</string>
+    <string name="plan_hint">最多 8 个频道。点波段名可整组切换到该波段；也可以跨波段逐个点选，混合扫描。</string>
     <string name="plan_count">已选 %1$d/%2$d · %3$s</string>
+    <string name="plan_full">已达上限，先取消一个频道。</string>
     <string name="plan_clear">清空</string>
 
     <string name="set_mode">LO 模式</string>
