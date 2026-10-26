@@ -236,7 +236,7 @@ Send these with `tools/widscan58cli.py cmd …` or the UI's Protocol console.
 | `CONFIG RESET` | RotorHazard mode only: erase the saved RotorHazard mode defaults and apply the built-in ones |
 | `CONFIG?` | `STATUS?` under another name (`CONFIG {…}`), allowed in RotorHazard mode. In RotorHazard mode only `PROTOCOL…`, `INFO`, `CONFIG?`, `CONFIG SAVE`, `CONFIG RESET`, `METRICS RSSI\|SNR\|?`, `GAIN …`, `FFT`, `FILTER`, `IQCORR`, `MODE GROUP\|SINGLE`, `LEVELFILTER …`, `RECAL`, `THROTTLE`, `PHYIDLE…` and `GPIO…` work; the rest answer `ERR rh_mode` |
 | `LEVELFILTER MEDIAN\|EMA`, `LEVELFILTER?` | RotorHazard mode only (`ERR rh_only` otherwise; the query works in both): the seats' level filter. `MEDIAN` (default): the 255 ms running median, as RotorHazard's nodes. `EMA`: a median of 3, then an exponential average with a 2.72 ms time constant at any update rate (its weight comes from each update's interval), as FPVGateC5MK (alpha 0.3 at ~1030 /s). A change resets the seats' levels. Reported as `level_filter` in `STATUS?`/`CONFIG?` |
-| `GPIO <n> NONE\|LOW\|HIGH`, `GPIO SAVE`, `GPIO?` | GPIO outputs set at boot, e.g. an antenna switch (Waveshare ESP32-C5-Zero: GPIO26). A change drives the pin at once (`NONE`: back to the reset state, pull-up on); `GPIO SAVE` makes the settings in effect the boot ones (NVS, base 3 per GPIO number, 40 per `u64` key `gpio0`, `gpio1`; `src/gpio_out.c`), applied right after `nvs_flash_init`. `GPIO?` answers `GPIO {"count":N,"active":"…","saved":"…"}`, one character per GPIO: `-` unused, `L`, `H`, `x` not available (USB, and the flash pins IDF reserves). Works in both modes |
+| `GPIO <n> NONE\|LOW\|HIGH`, `GPIO SAVE`, `GPIO?` | GPIO outputs set at boot, e.g. an antenna switch (Waveshare ESP32-C5-Zero: GPIO26). A change drives the pin at once (`NONE`: back to the reset state, pull-up on); `GPIO SAVE` makes the settings in effect the boot ones (NVS, base 3 per GPIO number, 40 per `u64` key `gpio0`, `gpio1`; `src/gpio_out.c`), applied right after `nvs_flash_init`. `GPIO?` answers `GPIO {"count":N,"active":"…","saved":"…"}`, one character per GPIO: `-` unused, `L`, `H`, `x` not available (USB, the C5's UART pins 11/12, and the flash pins IDF reserves). Works in both modes |
 | `REBOOT` | Restart (USB stays connected). The board comes back silent in RotorHazard mode; the web UI notices the missing telemetry and switches it back to monitor mode |
 
 ## RotorHazard mode
@@ -244,7 +244,9 @@ Send these with `tools/widscan58cli.py cmd …` or the UI's Protocol console.
 The board answers RotorHazard's serial node protocol (node API level 36) as one
 multi-node processor with 8 seats, like an S32_BPill board with 8 receivers.
 RotorHazard's server needs no changes: add the port to `GENERAL` →
-`SERIAL_PORTS` in its config (e.g. `"SERIAL_PORTS": ["/dev/ttyACM0"]`).
+`SERIAL_PORTS` in its config. The port can be USB (`/dev/ttyACM0`) or the
+C5-Zero's UART0 on GP11 (TX) / GP12 (RX), 115200 8N1 (`src/proto/uart_link.c`;
+wiring and Pi setup in docs/RotorHazard.md).
 
 - **Firmware:** `src/proto/rh.c` (protocol; written from RotorHazard's
   server-side code, `src/interface/serial_node.py` and `RHInterface.py`) and
@@ -259,6 +261,13 @@ RotorHazard's server needs no changes: add the port to `GENERAL` →
   board: PLAN.md, "Gain sweep"). `CONFIG SAVE` replaces the gain, FFT, metric, LO plan and level filter defaults (NVS blob version 3, `commands.c`; versions 1
   and 2 load with the median filter); they are applied on every switch to this
   mode.
+- **Two ports:** USB and the UART have separate line and write state and each
+  port's replies go back to it; seats and levels are shared. The Pi's first
+  byte switches the radio to RotorHazard with the saved RH settings, ending a
+  USB monitor session. While the UART has had traffic in the last 2 s, USB's
+  `PROTOCOL MONITOR` answers `ERR uart_rh` (the UART itself answers
+  `ERR uart_port`); after 2 s of silence the web UI can take the radio back.
+  Frames and telemetry never go to the UART.
 - **Levels** are the `METRICS` byte codes, in 0.25 dB steps: RSSI (dBFS =
   code / 4 − 63.75) or SNR (dB = code / 4), clamped to 1–254. The RSSI range
   starts just below the ADC noise in the ±5 MHz window (about −59 to −62

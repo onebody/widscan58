@@ -1,9 +1,9 @@
 # Widscan58 as a RotorHazard timer node
 
 The board can act as a [RotorHazard](https://github.com/RotorHazard/RotorHazard)
-timer node: one USB port with 8 seats, like an S32_BPill board with 8 RX5808
-receivers. The RotorHazard server needs no plugins or changes, only the serial
-port in its config.
+timer node: one USB port or the C5-Zero's UART header, with 8 seats, like an
+S32_BPill board with 8 RX5808 receivers. The RotorHazard server needs no
+plugins or changes, only the serial port in its config.
 
 ## Installation
 
@@ -53,6 +53,49 @@ RotorHazard's web UI.
 - The server finds 8 nodes on the port. It sets each seat's frequency from the
   current profile. A seat set to off is left out of the scan, which makes the
   other seats update faster (see below).
+
+## Raspberry Pi over UART
+
+The C5-Zero's header carries the same node protocol at 115200 8N1. This is
+the wiring for a Raspberry Pi (both sides are 3.3 V; no level shifter):
+
+| C5-Zero | Raspberry Pi 40-pin | |
+|---|---|---|
+| GP11 (TX) | pin 10 (GPIO15 / RXD) | |
+| GP12 (RX) | pin 8 (GPIO14 / TXD) | the board enables an internal pull-up |
+| GND | pin 6 | common ground |
+| 5V | pin 2 or 4, or the board's USB | one source only |
+
+Do not connect the C5-Zero's 3V3 output to the Pi's 3.3 V, and keep the wires
+under ~30 cm with GND routed alongside.
+
+On the Pi:
+
+1. `sudo raspi-config` → Interface Options → Serial Port: login shell **No**,
+   hardware serial **Yes**.
+2. In `/boot/firmware/config.txt` add `enable_uart=1` and
+   `dtoverlay=disable-bt`, so `/dev/serial0` is the PL011 `/dev/ttyAMA0`.
+3. Remove any `console=serial0,115200` from `/boot/firmware/cmdline.txt`.
+4. Put the port in RotorHazard's `config.json`:
+
+   ```json
+   { "GENERAL": { "SERIAL_PORTS": ["/dev/ttyAMA0"] } }
+   ```
+
+5. Do not select the `S32_BPill` board type: it tries 921600 first. The default
+   non-S32 type tries 115200 first, which is what this link uses.
+
+USB stays usable while the Pi is connected. The web UI can read the state and
+use RotorHazard mode's commands, but `PROTOCOL MONITOR` is refused with
+`ERR uart_rh` while the Pi has sent anything in the last 2 s. After 2 s of
+silence it switches to monitor mode; the Pi's next byte takes the radio back.
+The reverse also holds: a monitor session started before the Pi connects ends
+at the Pi's first byte.
+
+The ROM prints its boot banner on GP11 at power-up. RotorHazard rejects those
+bytes on the checksum and retries its probe; do not reset the board during a
+race. Only the 5.8 GHz band is supported, as over USB. A second module on a
+second serial port is how to run more than 8 pilots.
 
 ## RX gain
 
