@@ -34,6 +34,21 @@ adb install -r mobile/build/outputs/apk/debug/mobile-debug.apk
 Gradle 8.14, AGP 8.11, Kotlin 2.2, JDK 17. `local.properties` must point at your
 Android SDK (`sdk.dir=…`). `:core:test` is pure JVM and needs no device.
 
+A release build is `./gradlew :mobile:assembleRelease`, which on its own produces an
+**unsigned APK that no phone will install**. To sign it, drop a git-ignored
+`keystore.properties` in the project root — the key itself stays outside the repository:
+
+```ini
+storeFile=/absolute/path/to/release.jks
+storePassword=…
+keyPassword=…
+keyAlias=…
+```
+
+With that file present the release build is signed; without it the build still succeeds
+and just stays unsigned, so a clean checkout never fails. Once the signing key differs
+from the debug key, older debug installs cannot be upgraded in place — uninstall first.
+
 Then connect the board and grant the USB permission dialog. The app is in the
 `USB_DEVICE_ATTACHED` filter, so plugging the board in can open it by itself.
 

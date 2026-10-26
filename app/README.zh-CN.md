@@ -29,6 +29,19 @@ adb install -r mobile/build/outputs/apk/debug/mobile-debug.apk
 工具链：Gradle 8.14、AGP 8.11、Kotlin 2.2、JDK 17。`local.properties` 里要写
 `sdk.dir=…` 指向本机的 Android SDK。`:core:test` 是纯 JVM 测试，不需要设备。
 
+发布包用 `./gradlew :mobile:assembleRelease`，但它默认产出**装不上手机的未签名 APK**。
+要签名，在项目根放一个 `keystore.properties`（已在 `.gitignore` 里，密钥本体也放在仓库外）：
+
+```ini
+storeFile=/absolute/path/to/release.jks
+storePassword=…
+keyPassword=…
+keyAlias=…
+```
+
+读得到这个文件时 release 构建就签名，读不到时照常构建、只是不签名——所以干净检出不会
+构建失败。换过签名密钥以后，旧的 debug 包不能覆盖安装，要先卸载。
+
 然后插上板子，在弹出的 USB 访问授权里点允许。应用注册了 `USB_DEVICE_ATTACHED`
 过滤器，所以插上板子这一步本身就能把应用拉起来。
 
