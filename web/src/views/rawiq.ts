@@ -87,9 +87,13 @@ export class RawIqView implements View {
   render() {
     if (getLang() !== this.lang) {
       this.lang = getLang();
+      this.shownFor = null; // the info line is written at capture time
       for (const o of this.n.options) o.textContent = tr("{n} samples", { n: Number(o.value) });
     }
     this.limitSamples();
+    // The LO box holds a frequency, so name the pilot there too.
+    const loPilot = this.app.rhServer.pilotAt(Number(this.lo.value) / 1000);
+    this.lo.title = loPilot ? `${tr("RotorHazard pilot")}: ${loPilot.full}` : "";
     const r = this.app.store.rawiq;
     const themeKey = theme().ink;
     if (themeKey !== this.shownTheme) {
@@ -135,6 +139,11 @@ export class RawIqView implements View {
         conj: r.conjugated ? tr(" · conjugated") : "",
       },
     );
+
+    // The LO is the channel under test: name its pilot when there is one.
+    const pilot = this.app.rhServer.pilotAt(r.loKhz / 1000);
+    this.info.textContent += pilot ? ` · ${pilot.label}` : "";
+    this.info.title = pilot ? `${tr("RotorHazard pilot")}: ${pilot.full}` : "";
 
     // Constellation (density-ish via low alpha points).
     {

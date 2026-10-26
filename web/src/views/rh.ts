@@ -49,7 +49,7 @@ export class RhSeats implements View {
   private lang = getLang();
 
   constructor(private app: App) {
-    const dialog = new ChannelPlanDialog();
+    const dialog = new ChannelPlanDialog((mhz) => this.app.rhServer.pilotAt(mhz));
     document.body.append(dialog.el);
     const edit = el("button", { title: "Choose the seats' channels (seat order follows frequency)" }, "Edit channels");
     edit.onclick = () =>

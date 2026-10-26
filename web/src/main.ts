@@ -110,7 +110,7 @@ const menu = el(
   el("label", { class: "menu-item menu-language" }, el("span", {}, "Language"), langSelect),
   el("div", { class: "menu-sep" }),
   el("div", { class: "menu-label" }, "About"),
-  el("a", { class: "menu-item", role: "menuitem", href: "https://github.com/CapnBry/widscan58", target: "_blank", rel: "noopener" }, "GitHub project ↗"),
+  el("a", { class: "menu-item", role: "menuitem", href: "https://github.com/onebody/widscan58", target: "_blank", rel: "noopener" }, "GitHub project ↗"),
   el("div", { class: "menu-info" }, el("span", {}, "Firmware"), fwValue),
   fwNote,
 );

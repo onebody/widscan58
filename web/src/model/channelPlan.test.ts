@@ -20,6 +20,10 @@ describe("channel plan", () => {
     expect(normalizePlan(["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "R1"])).toHaveLength(8);
     expect(channelsCommand(["R1", "A8"])).toBe("CHANNELS R1=5658 A8=5725");
   });
+  it("mixes bands in one plan", () => {
+    expect(normalizePlan(["R2", "L1", "R1", "L2"])).toEqual(["L1", "L2", "R1", "R2"]);
+    expect(channelsCommand(normalizePlan(["R2", "L1", "R1", "L2"]))).toBe("CHANNELS L1=5362 L2=5399 R1=5658 R2=5695");
+  });
 });
 
 describe("planBuild", () => {
@@ -40,5 +44,13 @@ describe("planBuild", () => {
     const hops = (b: string) => planBuild(c5, chans(BANDS.find((x) => x.letter === b)!.mhz), 0xff, true).length;
     expect(["R", "A", "B", "E", "F", "L"].map(hops)).toEqual([4, 3, 3, 4, 3, 4]);
     expect(planBuild(c5, chans([5880, 5880]), 3, true).map((h) => h.loKhz)).toEqual([5872000]);
+  });
+
+  it("splits a mixed low/race plan into one hop per band", () => {
+    const hops = planBuild(c5, chans([5362, 5399, 5658, 5695]), 0xf, true);
+    expect(hops.map((h) => h.ch)).toEqual([
+      [0, 1],
+      [2, 3],
+    ]);
   });
 });

@@ -14,6 +14,8 @@ describe("normalizeRhUrl", () => {
     expect(normalizeRhUrl("   ")).toBe("");
     expect(normalizeRhUrl("ftp://rh.local")).toBe("");
     expect(normalizeRhUrl("not a url")).toBe("");
+    expect(normalizeRhUrl("rh local:5000")).toBe("");
+    expect(normalizeRhUrl("http://not%20a%20url")).toBe("");
   });
 });
 
@@ -49,6 +51,13 @@ describe("buildSnapshot", () => {
     expect(s.byMhz.get(5658)).toEqual({ mhz: 5658, label: "BMS", full: "BMS · Bob Smith" });
     expect(s.byMhz.get(5695)).toEqual({ mhz: 5695, label: "Alice", full: "Alice" });
     expect(s.byMhz.get(5732)).toEqual({ mhz: 5732, label: "CJ", full: "CJ" });
+  });
+
+  it("reads the status payload RotorHazard 4.5 wraps in \"status\"", () => {
+    const wrapped = { status: { server_info: { server_api: 49 }, state: { current_heat: 12, currentProfile: 3 } } };
+    const s = buildSnapshot(wrapped, heat(12, { "0": 7 }), pilots, profile);
+    expect(s.practice).toBe(false);
+    expect(s.byMhz.get(5658)?.label).toBe("BMS");
   });
 
   it("has no names in practice (no current heat)", () => {

@@ -31,8 +31,14 @@ interface RhPilotJson {
   name?: string | null;
 }
 
+interface RhStateJson {
+  current_heat?: number | null;
+  currentProfile?: number | null;
+}
+
 interface RhStatusJson {
-  state?: { current_heat?: number | null; currentProfile?: number | null };
+  state?: RhStateJson;
+  status?: { state?: RhStateJson }; // 4.5 wraps the payload in "status"
 }
 
 interface RhHeatJson {
@@ -49,10 +55,14 @@ interface RhProfileJson {
 export function normalizeRhUrl(input: string): string {
   const s = input.trim();
   if (!s) return "";
+  // Browsers differ on spaces in a host: Chrome percent-encodes them instead
+  // of refusing, so reject them before URL parsing can hide the mistake.
+  if (/\s/.test(s)) return "";
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
   try {
     const u = new URL(withScheme);
     if (u.protocol !== "http:" && u.protocol !== "https:") return "";
+    if (!u.hostname || /[%\s]/.test(u.hostname)) return "";
     u.hash = "";
     u.search = "";
     return u.href.replace(/\/+$/, "");
@@ -78,7 +88,7 @@ export function buildSnapshot(
   pilots: RhPilotJson[] | null,
   profile: RhProfileJson | null,
 ): RhSnapshot {
-  const heatId = Number(status?.state?.current_heat) || 0;
+  const heatId = Number((status?.status ?? status)?.state?.current_heat) || 0;
   const setup = heat?.heat?.setup;
   // The current heat can change between the status and the heat reads.
   const forThisHeat = setup?.heat_id === heatId;
@@ -156,7 +166,13 @@ export class RhServer {
 
   /** The error in the current language (it can outlive a language switch). */
   errorText(): string | null {
-    return this.error ? t(this.error.key, this.error.params) : null;
+    if (!this.error) return null;
+    const params: Record<string, string | number> = { ...this.error.params };
+    if (typeof params.msgKey === "string") {
+      params.msg = t(params.msgKey);
+      delete params.msgKey;
+    }
+    return t(this.error.key, params);
   }
 
   /** The pilot on a channel frequency (MHz), or null. */
@@ -227,8 +243,9 @@ export class RhServer {
     const timer = window.setTimeout(() => c.abort(), TIMEOUT_MS);
     try {
       const status = await getJson<RhStatusJson>(`${this.base}/api/status`, c.signal);
-      const heatId = Number(status?.state?.current_heat) || 0;
-      const profileId = Number(status?.state?.currentProfile) || 0;
+      const state = status?.status ?? status;
+      const heatId = Number(state?.state?.current_heat) || 0;
+      const profileId = Number(state?.state?.currentProfile) || 0;
       const [heat, pilots, profile] = await Promise.all([
         heatId ? getJson<RhHeatJson>(`${this.base}/api/heat/${heatId}`, c.signal) : Promise.resolve(null),
         getJson<{ pilots?: RhPilotJson[] }>(`${this.base}/api/pilot/all`, c.signal),
@@ -242,10 +259,11 @@ export class RhServer {
     } catch (e) {
       if (gen !== this.gen) return;
       this.status = "error";
-      this.error = {
-        key: "Cannot reach {url}: {msg}",
-        params: { url: this.base, msg: (e as Error).name === "AbortError" ? "timeout" : (e as Error).message },
-      };
+      // "Failed to fetch" is the browser's own English text, so name the
+      // common network failures instead of passing it through.
+      const err = e as Error;
+      const msgKey = err.name === "AbortError" ? "timeout" : err instanceof TypeError ? "connection refused or unreachable" : err.message;
+      this.error = { key: "Cannot reach {url}: {msg}", params: { url: this.base, msgKey } };
     } finally {
       window.clearTimeout(timer);
       if (gen === this.gen) {

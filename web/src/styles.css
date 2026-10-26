@@ -351,6 +351,7 @@ button.icon { display: inline-flex; align-items: center; justify-content: center
 }
 .spec-label b { display: block; font-size: 12px; }
 .spec-label small { display: block; font-size: 10px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.spec-label .plan-pilot { color: var(--accent); font-weight: 600; }
 .spec-hump.on .spec-label, .spec-hump.on .spec-label small { color: #fff; }
 .spec-hump:disabled .spec-label { opacity: 0.45; cursor: default; }
 .spec-guides { position: absolute; left: var(--band-w); right: 0; top: 22px; bottom: 0; pointer-events: none; }
@@ -358,6 +359,7 @@ button.icon { display: inline-flex; align-items: center; justify-content: center
 .plan-buttons { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .plan-buttons .spacer { flex: 1; }
 .plan-count { color: var(--muted); }
+.plan-count.warn { color: var(--warning); }
 .banner {
   margin: 10px 16px 0;
   padding: 8px 12px;

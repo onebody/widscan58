@@ -82,6 +82,7 @@ interface Tile {
   key: HTMLSpanElement;
   name: HTMLSpanElement;
   freq: HTMLDivElement;
+  pilot: HTMLDivElement;
   main: HTMLDivElement; // the power in mW or W, large
   sub: HTMLDivElement; // the same in dBm
   kv: HTMLDivElement;
@@ -104,7 +105,7 @@ export class PowerChannels implements View {
     const edit = el("button", { title: "Choose which channels to measure" }, "Edit");
     all.onclick = () => void this.setMask((1 << (app.store.profile?.channels.length ?? 8)) - 1);
     none.onclick = () => void this.setMask(0);
-    const dialog = new ChannelPlanDialog();
+    const dialog = new ChannelPlanDialog((mhz) => this.app.rhServer.pilotAt(mhz));
     document.body.append(dialog.el);
     edit.onclick = () => dialog.open(app.deviceSettings.channels, (channels) => void this.setChannels(channels));
 
@@ -176,13 +177,23 @@ export class PowerChannels implements View {
         key: el("span", { class: "key" }),
         name: el("span", {}),
         freq: el("div", { class: "freq" }),
+        pilot: el("div", { class: "pilot" }),
         main: el("div", { class: "power-main" }),
         sub: el("div", { class: "power-sub" }),
         kv: el("div", { class: "kv" }),
         badges: el("div", { class: "badges" }),
         toggle,
       };
-      t.root.append(el("div", { class: "name" }, t.key, t.name), el("label", { class: "switch" }, toggle), t.freq, t.main, t.sub, t.kv, t.badges);
+      t.root.append(
+        el("div", { class: "name" }, t.key, t.name),
+        el("label", { class: "switch" }, toggle),
+        t.freq,
+        t.pilot,
+        t.main,
+        t.sub,
+        t.kv,
+        t.badges,
+      );
       return t;
     });
     this.grid.replaceChildren(...this.tiles.map((t) => t.root));
@@ -229,6 +240,9 @@ export class PowerChannels implements View {
       tile.name.textContent = this.app.channelName(id);
       const mhz = Math.round(c.khz / 1000);
       tile.freq.textContent = `${mhz} MHz`;
+      const pilot = this.app.rhServer.pilotAt(c.khz / 1000);
+      tile.pilot.textContent = pilot?.label ?? "";
+      tile.pilot.title = pilot ? `${t("RotorHazard pilot")}: ${pilot.full}` : "";
       const cs = store.channels[id];
       const m = cs?.latest;
       const off = calOffset(p.name, mhz);

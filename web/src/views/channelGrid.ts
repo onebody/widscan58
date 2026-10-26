@@ -48,7 +48,7 @@ export class ChannelGrid implements View {
     const edit = el("button", { title: "Choose which channels to scan" }, "Edit");
     all.onclick = () => this.setMask((1 << (app.store.profile?.channels.length ?? 8)) - 1);
     none.onclick = () => this.setMask(0);
-    const dialog = new ChannelPlanDialog();
+    const dialog = new ChannelPlanDialog((mhz) => this.app.rhServer.pilotAt(mhz));
     document.body.append(dialog.el);
     edit.onclick = () => dialog.open(app.deviceSettings.channels, (channels) => void this.setChannels(channels));
     this.el = el(

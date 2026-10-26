@@ -368,11 +368,12 @@ const zh: Record<string, string> = {
 
   // ---- Channel plan dialog -------------------------------------------------
   "Channels to scan": "要扫描的频道",
-  "Select up to {n} channels. Click a band name to select all eight of its channels.":
-    "最多选择 {n} 个频道。点击频段名称可选中该频段的全部 8 个频道。",
+  "Select up to {n} channels. Click a band name to switch to that band, or click channels in several bands to mix them.":
+    "最多选择 {n} 个频道。点击频段名称可整组切换到该频段；也可以跨频段逐个点选，混合扫描。",
   "Select all of {band} (replaces the selection)": "选中 {band} 的全部频道（替换当前选择）",
   "{n} of {max} selected": "已选 {n} / {max}",
   "(maximum)": "（已达上限）",
+  "The plan is full. Clear a channel first.": "已达上限，先取消一个频道。",
 
   // ---- GPIO dialog ---------------------------------------------------------
   "Not used": "未使用",
@@ -474,6 +475,8 @@ const zh: Record<string, string> = {
   "No pilots in this heat.": "本轮没有飞手。",
   "Updated {s} s ago": "{s} 秒前更新",
   "Cannot reach {url}: {msg}": "无法访问 {url}：{msg}",
+  timeout: "超时",
+  "connection refused or unreachable": "连接被拒绝或不可达",
   "The page is https, so the browser blocks an http:// RotorHazard address. Open this page locally or serve RotorHazard over https.":
     "当前页面是 https，浏览器会拦截 http:// 的 RotorHazard 地址。请在本地打开此页面，或给 RotorHazard 配置 https。",
   "RH: {heat} · {n} pilots": "RH：{heat} · {n} 位飞手",
