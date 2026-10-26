@@ -66,6 +66,8 @@ export class App {
     try {
       const saved = localStorage.getItem("widscan58.settings");
       if (saved) Object.assign(this.settings, JSON.parse(saved));
+      // Settings saved before the rename still say "rh".
+      if ((this.settings.uiMode as string) === "rh") this.settings.uiMode = "timer";
     } catch {
       /* storage unavailable */
     }
