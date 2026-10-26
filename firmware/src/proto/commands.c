@@ -627,7 +627,7 @@ static void commands_task(void *arg) {
             if (probe) {
                 probe = false;
                 set_proto(PROTO_RH);
-                rh_rx(RH_REVISION_CODE, now);
+                rh_rx(LINK_USB, RH_REVISION_CODE, now);
             }
             rh_poll(now);
             if (text && now - text_start > TEXT_TIMEOUT_US) {
@@ -646,7 +646,7 @@ static void commands_task(void *arg) {
                 }
                 if (n == 1 && b == RH_REVISION_CODE && !used && now - last_rx >= PROBE_IDLE_US) probe = true;
                 else line_byte(b);
-            } else if (text || (rh_idle() && rh_text_start(b))) {
+            } else if (text || (rh_idle(LINK_USB) && rh_text_start(b))) {
                 if (!text) {
                     text = true;
                     text_start = now;
@@ -656,7 +656,7 @@ static void commands_task(void *arg) {
                 if (b == '\n') text = false;
                 line_byte(b); /* may switch to monitor mode */
             } else {
-                rh_rx(b, now);
+                rh_rx(LINK_USB, b, now);
             }
             last_rx = now;
         }

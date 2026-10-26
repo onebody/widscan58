@@ -61,16 +61,23 @@ static struct {
     int64_t last_us;
     lap_seat_t lap;
 } *seat;
-static unsigned cur;
-/* Write in progress. */
-static uint8_t wcmd, wbuf[4], wneed, wgot;
-static int64_t wstart;
+/* Per port (USB host, Pi): the seat WRITE_CURNODE_INDEX selected and the
+ * write in progress. Seats and levels are shared below: there is one
+ * receiver. On the heap, like the seats: the C5's static RAM below the RF
+ * dump bank is nearly full. */
+typedef struct {
+    uint8_t wcmd, wbuf[4], wneed, wgot;
+    int64_t wstart;
+    unsigned cur;
+} rh_port_t;
+static rh_port_t *port;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 esp_err_t rh_init(void) {
     seat = heap_caps_calloc(RH_SEATS, sizeof(*seat), MALLOC_CAP_INTERNAL);
-    if (!seat) return ESP_ERR_NO_MEM;
+    port = heap_caps_calloc(LINK_COUNT, sizeof(*port), MALLOC_CAP_INTERNAL);
+    if (!seat || !port) return ESP_ERR_NO_MEM;
     const profile_t *p = profile_default(radio_caps()->target);
     for (unsigned j = 0; j < RH_SEATS; j++) {
         /* The server reads the frequency first and rejects 0: report the
@@ -170,9 +177,10 @@ static void extremums(lap_seat_t *l, uint32_t now) {
     }
 }
 
-static void read_cmd(uint8_t cmd) {
+static void read_cmd(link_sink_t sink, uint8_t cmd) {
     char buf[TEXT_BLOCK + 1];
     outn = 0;
+    unsigned cur = port[sink].cur;
     const uint32_t now = now_ms();
     portENTER_CRITICAL(&mux);
     lap_seat_t *l = &seat[cur].lap;
@@ -210,15 +218,16 @@ static void read_cmd(uint8_t cmd) {
     uint8_t sum = 0;
     for (unsigned j = 0; j < outn; j++) sum += out[j];
     put8(sum);
-    link_raw(out, outn);
+    link_raw_to(sink, out, outn);
 }
 
-static void set_frequency(uint16_t mhz) {
+static void set_frequency(link_sink_t sink, uint16_t mhz) {
     if (mhz < MIN_FREQ || mhz > MAX_FREQ) return;
     scan_config_t c;
     scanner_get_config(&c);
     uint32_t khz;
     bool mapped = profile_from_equiv_khz(c.profile, mhz * 1000u, &khz); /* 1111: the server's "off" */
+    unsigned cur = port[sink].cur;
     portENTER_CRITICAL(&mux);
     bool changed = seat[cur].freq_mhz != mhz || !seat[cur].set;
     seat[cur].freq_mhz = mhz;
@@ -234,9 +243,10 @@ static void set_frequency(uint16_t mhz) {
     scanner_set_config(&c);
 }
 
-static void write_cmd(uint8_t cmd, const uint8_t *d) {
+static void write_cmd(link_sink_t sink, uint8_t cmd, const uint8_t *d) {
+    unsigned cur = port[sink].cur;
     switch (cmd) {
-    case WRITE_FREQUENCY: set_frequency((uint16_t)(d[0] << 8 | d[1])); break;
+    case WRITE_FREQUENCY: set_frequency(sink, (uint16_t)(d[0] << 8 | d[1])); break;
     case WRITE_ENTER_AT_LEVEL:
         portENTER_CRITICAL(&mux);
         seat[cur].lap.enter_at = d[0];
@@ -253,7 +263,7 @@ static void write_cmd(uint8_t cmd, const uint8_t *d) {
         portEXIT_CRITICAL(&mux);
         break;
     case WRITE_CURNODE_INDEX:
-        if (d[0] < RH_SEATS) cur = d[0];
+        if (d[0] < RH_SEATS) port[sink].cur = d[0];
         break;
     default: break; /* SEND_STATUS_MESSAGE, RESET_PAIRED_NODE, JUMP_TO_BOOTLOADER: nothing to do */
     }
@@ -273,31 +283,33 @@ static unsigned write_size(uint8_t cmd) {
     }
 }
 
-bool rh_idle(void) { return !wneed; }
+bool rh_idle(link_sink_t sink) { return !port[sink].wneed; }
 
-void rh_rx(uint8_t b, int64_t now_us) {
-    if (wneed) {
-        wbuf[wgot++] = b;
-        if (wgot < wneed) return;
+void rh_rx(link_sink_t sink, uint8_t b, int64_t now_us) {
+    rh_port_t *p = &port[sink];
+    if (p->wneed) {
+        p->wbuf[p->wgot++] = b;
+        if (p->wgot < p->wneed) return;
         uint8_t sum = 0;
-        for (unsigned j = 0; j + 1 < wneed; j++) sum += wbuf[j];
-        bool ok = sum == wbuf[wneed - 1];
-        wneed = 0;
-        if (ok) write_cmd(wcmd, wbuf);
+        for (unsigned j = 0; j + 1 < p->wneed; j++) sum += p->wbuf[j];
+        bool ok = sum == p->wbuf[p->wneed - 1];
+        p->wneed = 0;
+        if (ok) write_cmd(sink, p->wcmd, p->wbuf);
         return;
     }
     if (b <= 0x50) {
-        read_cmd(b);
+        read_cmd(sink, b);
         return;
     }
     unsigned n = write_size(b);
     if (!n) return; /* unknown write: ignored, as RotorHazard's own nodes */
-    wcmd = b;
-    wneed = (uint8_t)(n + 1);
-    wgot = 0;
-    wstart = now_us;
+    p->wcmd = b;
+    p->wneed = (uint8_t)(n + 1);
+    p->wgot = 0;
+    p->wstart = now_us;
 }
 
 void rh_poll(int64_t now_us) {
-    if (wneed && now_us - wstart > WRITE_TIMEOUT_US) wneed = 0;
+    for (unsigned j = 0; j < LINK_COUNT; j++)
+        if (port[j].wneed && now_us - port[j].wstart > WRITE_TIMEOUT_US) port[j].wneed = 0;
 }
