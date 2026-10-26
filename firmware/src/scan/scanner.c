@@ -483,7 +483,7 @@ static void do_rawiq(const scan_request_t *r) {
     radio_tune(r->lo_khz);
     const uint32_t *words;
     if (radio_capture(r->n, r->rate_code, c->settle_us, &words, NULL) != ESP_OK) {
-        link_text("ERR capture\n");
+        link_text_to(r->sink, "ERR capture\n");
         return;
     }
     /* Pack in place to signed 8-bit I, Q: the capture aperture is ours until
@@ -515,7 +515,7 @@ static void do_rawiq(const scan_request_t *r) {
         unsigned len = r->n - off < RAWIQ_CHUNK ? r->n - off : RAWIQ_CHUNK;
         h.offset = (uint16_t)off;
         if (!link_frame_wait(FRAME_RAWIQ, &h, sizeof(h), iq + 2 * off, 2u * len, 500)) {
-            link_text("ERR link_full\n");
+            link_text_to(r->sink, "ERR link_full\n");
             return;
         }
     }
@@ -529,7 +529,7 @@ static void do_fft_eval(const scan_request_t *r) {
     const float rate = radio_caps()->rates_hz[c->rate_code];
     const unsigned n = c->capture_samples;
     if (n > 8192) {
-        link_text("ERR ffteval_capn\n"); /* the evaluation uses the aperture above 8192 words */
+        link_text_to(r->sink, "ERR ffteval_capn\n"); /* the evaluation uses the aperture above 8192 words */
         return;
     }
     uint32_t *buf = radio_sample_buffer(NULL);
@@ -542,7 +542,7 @@ static void do_fft_eval(const scan_request_t *r) {
         } else {
             radio_tune(r->lo_khz);
             if (radio_capture(n, c->rate_code, c->settle_us, &words, NULL) != ESP_OK) {
-                link_text("ERR capture\n");
+                link_text_to(r->sink, "ERR capture\n");
                 return;
             }
         }
@@ -564,18 +564,19 @@ static void do_fft_eval(const scan_request_t *r) {
     psd_release_unused(); /* the evaluation loaded every implementation */
     for (unsigned t = 0; t < PSD_FFT_COUNT; t++) {
         if (acc[t].err != ESP_OK) {
-            link_printf("FFTEVAL %s %s ERR %s\n", r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE",
-                        psd_fft_name(acc[t].type), esp_err_to_name(acc[t].err));
+            link_printf_to(r->sink, "FFTEVAL %s %s ERR %s\n", r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE",
+                           psd_fft_name(acc[t].type), esp_err_to_name(acc[t].err));
             continue;
         }
-        link_printf("FFTEVAL %s %s tone %.2f floor %.2f spur %.2f sfdr %.2f rel %.3f dmean %.3f drms %.3f dmax %.2f fft_us %u psd_us %u\n",
-                    r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE", psd_fft_name(acc[t].type),
-                    (double)acc[t].tone_db, (double)acc[t].floor_db, (double)acc[t].spur_db,
-                    (double)(acc[t].tone_db - acc[t].spur_db), (double)acc[t].floor_rel_db,
-                    (double)acc[t].diff_mean_db, (double)acc[t].diff_rms_db, (double)acc[t].diff_max_db,
-                    (unsigned)acc[t].fft_us, (unsigned)acc[t].psd_us);
+        link_printf_to(r->sink,
+                       "FFTEVAL %s %s tone %.2f floor %.2f spur %.2f sfdr %.2f rel %.3f dmean %.3f drms %.3f dmax %.2f fft_us %u psd_us %u\n",
+                       r->type == SCAN_REQ_FFTEVAL_SYNTH ? "SYNTH" : "LIVE", psd_fft_name(acc[t].type),
+                       (double)acc[t].tone_db, (double)acc[t].floor_db, (double)acc[t].spur_db,
+                       (double)(acc[t].tone_db - acc[t].spur_db), (double)acc[t].floor_rel_db,
+                       (double)acc[t].diff_mean_db, (double)acc[t].diff_rms_db, (double)acc[t].diff_max_db,
+                       (unsigned)acc[t].fft_us, (unsigned)acc[t].psd_us);
     }
-    link_text("FFTEVAL END\n");
+    link_text_to(r->sink, "FFTEVAL END\n");
 }
 
 static void throttle_wake(void *arg) {
@@ -647,7 +648,7 @@ static void scanner_task(void *arg) {
             else if (req.type == SCAN_REQ_RECAL) {
                 radio_force_recal();
                 memset(sp->iq, 0, sizeof(sp->iq));
-                link_text("OK RECAL\n");
+                link_text_to(req.sink, "OK RECAL\n");
             }
         }
         int64_t now = esp_timer_get_time();
