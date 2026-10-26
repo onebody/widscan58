@@ -125,7 +125,7 @@ header.top .brand { display: inline-flex; align-items: center; gap: 8px; }
 .menu-item:disabled { color: var(--muted); cursor: default; }
 .menu-item[role="menuitemradio"]::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1px solid var(--muted); flex: none; }
 .menu-item[aria-checked="true"]::before { background: var(--accent); border-color: var(--accent); }
-.menu-note { font-size: 11px; color: var(--muted); padding: 0 8px 4px 24px; }
+.menu-note { font-size: 11px; color: var(--muted); padding: 0 8px 4px 24px; max-width: 320px; line-height: 1.4; }
 .menu-note[hidden] { display: none; }
 .menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
 a.menu-item { text-decoration: none; }

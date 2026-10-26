@@ -220,7 +220,7 @@ export class RhServer {
     if (location.protocol === "https:" && this.base.startsWith("http:")) {
       this.status = "error";
       this.error = {
-        key: "The page is https, so the browser blocks an http:// RotorHazard address. Open this page locally or serve RotorHazard over https.",
+        key: "This page is https, so the browser blocks an http:// RotorHazard address. Open the local copy on the machine the board is plugged into (http://localhost), or use an https address.",
       };
       this.touch();
       return; // no use trying: the browser blocks every request

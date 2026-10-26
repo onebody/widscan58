@@ -487,8 +487,8 @@ const zh: Record<string, string> = {
   "Cannot reach {url}: {msg}": "无法访问 {url}：{msg}",
   timeout: "超时",
   "connection refused or unreachable": "连接被拒绝或不可达",
-  "The page is https, so the browser blocks an http:// RotorHazard address. Open this page locally or serve RotorHazard over https.":
-    "当前页面是 https，浏览器会拦截 http:// 的 RotorHazard 地址。请在本地打开此页面，或给 RotorHazard 配置 https。",
+  "This page is https, so the browser blocks an http:// RotorHazard address. Open the local copy on the machine the board is plugged into (http://localhost), or use an https address.":
+    "本页是 https，浏览器会拦截 http:// 的 RotorHazard 地址。请在插着板子的电脑上打开本地副本（http://localhost），或改用 https 地址。",
   "RH: {heat} · {n} pilots": "RH：{heat} · {n} 位飞手",
   "RH: {heat} · no pilots": "RH：{heat} · 无飞手",
   "RH: practice · no pilots": "RH：练习模式 · 无飞手",
