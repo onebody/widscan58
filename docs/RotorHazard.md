@@ -88,9 +88,9 @@ On the Pi:
 USB stays usable while the Pi is connected. The web UI can read the state and
 use RotorHazard mode's commands, but `PROTOCOL MONITOR` is refused with
 `ERR uart_rh` while the Pi has sent anything in the last 2 s. After 2 s of
-silence it switches to monitor mode; the Pi's next byte takes the radio back.
-The reverse also holds: a monitor session started before the Pi connects ends
-at the Pi's first byte.
+silence the web UI can switch to monitor mode, and the Pi's next byte takes
+the radio back. The reverse also holds: a monitor session started before the
+Pi connects ends at the Pi's first byte.
 
 The ROM prints its boot banner on GP11 at power-up. RotorHazard rejects those
 bytes on the checksum and retries its probe; do not reset the board during a
