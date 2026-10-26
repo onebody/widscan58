@@ -267,7 +267,11 @@ wiring and Pi setup in docs/RotorHazard.md).
   USB monitor session. While the UART has had traffic in the last 2 s, USB's
   `PROTOCOL MONITOR` answers `ERR uart_rh` (the UART itself answers
   `ERR uart_port`); after 2 s of silence the web UI can take the radio back.
-  Frames and telemetry never go to the UART.
+  Frames and telemetry never go to the UART. The UART sink has no queue: the
+  C5 has ~5 KB of free heap after boot, and the 8 KB ring plus its writer task
+  alone starved `commands_task_start` of its 3 KB reply buffer (the board ran
+  but answered nothing). Replies block in `uart_write_bytes` instead — the
+  line shifts at 115200 with or without the Pi reading.
 - **Levels** are the `METRICS` byte codes, in 0.25 dB steps: RSSI (dBFS =
   code / 4 − 63.75) or SNR (dB = code / 4), clamped to 1–254. The RSSI range
   starts just below the ADC noise in the ±5 MHz window (about −59 to −62
