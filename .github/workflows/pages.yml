@@ -73,7 +73,7 @@ jobs:
             for env in $FW_ENVS; do
               (cd "$RUNNER_TEMP/fw/$id/firmware" && pio run -e "$env")
             done
-            tools/pages_firmware.py --id "$id" --src "$RUNNER_TEMP/fw/$id" --out web/public/firmware $FW_ENVS
+            tools/pages_firmware.py --id "$id" --src "$RUNNER_TEMP/fw/$id" web/public/firmware $FW_ENVS
             git worktree remove --force "$RUNNER_TEMP/fw/$id"
             echo "::endgroup::"
           done
