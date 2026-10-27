@@ -72,8 +72,9 @@ under ~30 cm with GND routed alongside.
 
 ![Wiring: C5-Zero GP11/GP12/GND (and optionally 5V) to the Raspberry Pi header](../images/rh-uart-wiring.png)
 
-Module pin references — on both C5 boards the silicon UART0 pins are the same,
-only the silkscreen labels differ (GPIO11 = U0TXD, GPIO12 = U0RXD):
+Module pin references, with the pins used by this wiring highlighted and
+labeled — on both C5 boards the silicon UART0 pins are the same, only the
+silkscreen labels differ (GPIO11 = U0TXD, GPIO12 = U0RXD):
 
 | Module | Pinout image |
 |---|---|
