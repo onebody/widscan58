@@ -14,21 +14,23 @@ Widscan58 是一个把 **ESP32-C5 的 Wi-Fi 射频前端当作 SDR** 使用的 5
 
 当前本地版本由三块组成：
 
-| 固件 + Web + 桌面壳 + 工具 + 项目文档 | `repo/`，git 仓库，分支 `rh-uart-bridge` @ `63ec23c`（已合入 fork main） | 领先上游 `CapnBry/widscan58` 43 个提交、落后 4 个 | 固件源码（`firmware/src`）约 5,900 行；Web 约 10,200 行（TS 9,800 + 脚本 420）；桌面壳主进程 142 行；工具 1,441 行；项目 Markdown 4,645 行 |
+| 固件 + Web + 桌面壳 + 工具 + 项目文档 | `repo/`，git 仓库，分支 `rh-uart-bridge` @ `f521262`（已合入 fork main） | 领先上游 `CapnBry/widscan58` 45 个提交、落后 4 个 | 固件源码（`firmware/src`）约 5,900 行；Web 约 10,200 行（TS 9,800 + 脚本 420）；桌面壳主进程 142 行；工具 1,441 行；仓库 Markdown 7,252 行（根目录 1,895 + `docs/` 5,357） |
 | Android 原生 App | `app/`，独立 git 仓库，`master` @ `b03b8cc` | `0.9`（versionCode 9） | Kotlin/Java 15,825 行；`:core` 30 个主源文件、27 个测试类；App 侧文档 942 行 |
 | Android 发布包 | `widscan58-app-0.9-release.apk` | 约 1.5 MB，已用 v2 方案签名 | 包名 `com.onebody.widscan58`，minSdk 26 / targetSdk 36 |
 | Web 发布包 | `widscan58-web-0.9.zip` | 构建产物 `dist/` 的压缩包，48 个文件 / 54 条目 | 版本 `0.9.0`，解压到任意静态目录；`serve.mjs` 在源码目录里，不随 zip 分发 |
 | 桌面版 | `repo/web-desktop/`，产物在其 `release/` 下 | 版本 `0.9.0`，macOS Apple Silicon dmg + Windows x64 免安装 zip，**未签名** | Electron 45 壳，零运行时依赖；约 120 MB / 154 MB |
 
-自动测试共 **282 项**（0.8 发布时实跑；0.9 这轮的复跑见 7.1）：
+自动测试共 **289 项**（0.9 发布前实跑，逐条结果见 7.1）：
 
 | 层 | 测试数 | 本次结果 |
 |---|---:|---|
-| 固件 host 测试（Unity） | 17 | 17/17 通过，2.76 s |
-| Web 单元测试（Vitest） | 56 | 56/56 通过，10 个测试文件 |
-| Android `:core`（JUnit） | 209 | 26 个测试类，0 失败、0 错误 |
+| 固件 host 测试（Unity） | 17 | 17/17 通过，2.905 s |
+| Web 单元测试（Vitest） | 56 | 56/56 通过，10 个测试文件，338 ms |
+| Android `:core`（JUnit） | 216 | 27 个测试类，`--rerun-tasks` 强制重跑，0 失败、0 错误、0 跳过 |
 
-**总体判断**：三端功能已经闭环，工程完成度高；固件在真机上做过大量时序与射频测量，Web 有浏览器内烧录/PWA/模拟器，Android 已到可发布的 0.8。当前最主要的不是“缺功能”，而是**工程治理问题**：私有 PHY ABI 与 C5 内存余量脆弱、固件发布不可复现、UART/真机飞行验收缺少正式记录、Android 独立仓库没有 remote（依赖手工镜像）、若干文档已滞后。
+桌面壳没有测试源集，289 项里**不包含**它（见 7.3）。
+
+**总体判断**：三端功能已经闭环，工程完成度高；固件在真机上做过大量时序与射频测量，Web 有浏览器内烧录/PWA/模拟器，Android 到 0.9 已经有应用内升级，桌面壳把同一份页面带到 Windows/macOS 并绕开了 https 页面的 RH 限制。当前最主要的不是“缺功能”，而是**工程治理问题**：私有 PHY ABI 与 C5 内存余量脆弱、固件发布不可复现、UART/真机飞行验收缺少正式记录、Android 独立仓库没有 remote（依赖手工镜像）、桌面产物未签名且零自动化测试、若干文档已滞后。
 
 ---
 
@@ -65,8 +67,8 @@ widscan58-clone/
 
 `repo/`：
 
-- 发布分支 `rh-uart-bridge`，HEAD `63ec23c`（把 fork main 合回来：README 的 Pages 链接改成本站、App 0.9 的镜像）。
-- 相对 `origin/main`（上游 `CapnBry/widscan58`）领先 **43** 个提交、落后 **4** 个——上游这 4 个是 `fa948b2`（扫描任务每秒让出一次）、`b5b2f6a`（遥测按整轮统计旋转率）、`09c5905`（扫描任务最后启动）、`9999b07`（计圈传 PLATEAU 容差）。**上游仍不含 C5 的 boot 信道修复**，见 11.4。
+- 发布分支 `rh-uart-bridge`，HEAD `f521262`；`63ec23c` 是把 fork main 合回来（README 的 Pages 链接改成本站、App 0.9 的镜像），之后 `c7fd9fa`/`f521262` 两个提交就是 0.9 这轮的文档与版本号。
+- 相对 `origin/main`（上游 `CapnBry/widscan58`）领先 **45** 个提交、落后 **4** 个——上游这 4 个是 `fa948b2`（扫描任务每秒让出一次）、`b5b2f6a`（遥测按整轮统计旋转率）、`09c5905`（扫描任务最后启动）、`9999b07`（计圈传 PLATEAU 容差）。**上游仍不含 C5 的 boot 信道修复**，见 11.5。
 - 相对 `fork/main`（`onebody/widscan58`）内容一致：`repo/` 侧 `firmware/`、`web/`、`web-desktop/`、`tools/`、`docs/`、`app/` 六个目录的 tree hash 与 fork main 逐一相同（`git rev-parse` 对比）。发布时用 merge 合入，不重写历史、不 force push。
 - 提交作者：上游 Bryan Mayland 55 个，fork 作者 onebody 43 个（`git shortlog`）。
 - 历史里有同标题重复提交（如 `24b05e7` / `4d72509`，均为 “web: open the lap timer page for settings saved as 'rh'”），是合并/拣选留下的痕迹，不影响代码但会让审计变吵。
@@ -506,7 +508,7 @@ env -u ELECTRON_RUN_AS_NODE ELECTRON_MIRROR=https://npmmirror.com/mirrors/electr
 
 `web/public/firmware/`（gitignore，不进仓库）是构建时放进 `dist/` 的固件快照，桌面壳与下载 zip 离线兜底用的就是它。它**会过期**，所以 0.9 的发布流程固定加一步：构建前从线上 Pages 取回 `firmware/index.json` 与全部部件，逐个按 manifest 的 SHA-256 与字节数校验后再 `npm run build`。这样即使完全断网，下载包烧出来的也是当轮线上那两个版本。
 
-**离线副本必然比线上落后一代，这是构造性的**。Pages 用 fork main 的提交号给 `rh-uart` 命名，而那次构建正是由发布镜像推送触发的——副本却在推送之前就要 staging 完。0.9 发布后实测：线上 `firmware/index.json` 是 `app-v0.9-2-g2a25967`，包内 `dist/sw.js` 与线上 `sw.js` 字节数相同、只差这一个字符串（`app-v0.9-1-g5bf32a5`）。结论有两点：把副本刷到“当时线上最新”是能做到也有做头的（能烧、有校验），但别指望它等于推送之后的那一版；能联网时优先走线上清单（4.6）才是正解。
+**离线副本必然比线上落后一代，这是构造性的**。Pages 用 fork main 的 `git describe` 给 `rh-uart` 命名，而那次构建正是由发布镜像推送触发的——副本却在推送之前就要 staging 完。0.9 发布后实测：包内 `dist/sw.js` 与线上 `sw.js` 字节数相同、只差内嵌清单里的这一个字符串（包内 `app-v0.9-1-g5bf32a5`，线上先是 `app-v0.9-2-g2a25967`，打上 `web-v0.9` 之后连前缀都跟着变成 `web-v0.9-1-g<docs 提交>`）。结论有两点：把副本刷到“当时线上最新”是能做到也有做头的（能烧、有校验），但别指望它等于推送之后的那一版；能联网时优先走线上清单（4.6）才是正解。
 
 ---
 
@@ -681,11 +683,11 @@ adb install -r mobile/build/outputs/apk/debug/mobile-debug.apk
 | `repo/docs/RotorHazard.md` | 213 | 部署/操作 | 接线、Pi 配置、增益、性能、平滑都很完整；明确写了“未用真机四轴过门验证” |
 | `repo/docs/superpowers/specs/2026-10-26-rh-uart-bridge-design.md` | 207 | 内部设计 | 决策表清晰；状态“已确认” |
 | `repo/docs/superpowers/plans/2026-10-26-rh-uart-bridge.md` | 1,369 | 实施计划 | 任务拆解细；**Task 7 验证步骤全部未勾选** |
-| `app/README.md` | 200 | App 用户/开发者 | 已与代码对齐（瀑布行高、增益上限、语言行为、已实现功能清单于 2026-10-27 修正）；测试数与“无权限”表述需按 0.9 再看一次 |
-| `app/README.zh-CN.md` | 171 | 同上 | 同上，与英文版同步修正 |
+| `app/README.md` | 210 | App 用户/开发者 | 已与代码对齐（瀑布行高、增益上限、语言行为、已实现功能清单于 2026-10-27 修正）；0.9 两条权限与 216 个测试数已核实一致 |
+| `app/README.zh-CN.md` | 180 | 同上 | 同上，与英文版同步修正（`216 个测试`、`清单里只有两条`） |
 | `app/docs/MANUAL.zh-CN.md` | 552 | App 参考手册 | 内容全；适用版本 `0.9`，含 9.10「关于与升级」 |
-| `repo/docs/PROJECT-REPORT.zh-CN.md` | 约 870 | 项目总结 | 架构、验证现状、风险与各轮发布内容 |
-| `repo/docs/CHANGELOG.zh-CN.md` | 约 130 | 所有人 | 0.1 → 0.9 的逐版变更列表，四个发布物合并在一条时间线上 |
+| `repo/docs/PROJECT-REPORT.zh-CN.md` | 964 | 项目总结 | 架构、验证现状、风险与各轮发布内容 |
+| `repo/docs/CHANGELOG.zh-CN.md` | 123 | 所有人 | 0.1 → 0.9 的逐版变更列表，四个发布物合并在一条时间线上 |
 | `app/mobile/src/main/assets/help/index.html` | 548 | 应用内教程 | 18 节 21 图、离线、当前；仅中文 |
 
 桌面版没有独立 README：用法与限制写在 `web-v0.9` 的发布说明与本报告 4.9 里（`web-desktop/` 目录内暂无文档，是下一份该补的）。
@@ -879,16 +881,21 @@ App 的 APK 这轮**没有重新出**：`app/` 仓库自 `b03b8cc` 之后没有�
 ```text
 repo/（rh-uart-bridge）
   1. git merge fork/main            # 63ec23c，把 fork 侧 README 与 app 0.9 镜像回灌
-  2. 改文档 + 两个 package.json     # 本轮唯一提交
+  2. 改文档 + 两个 package.json      # c7fd9fa（本轮唯一的代码外改动：版本号）
   3. npm run build（web/）→ sync-dist → dist:mac / dist:win
-  4. git archive HEAD web web-desktop docs | tar -x  → rsync -a --delete → fork main
+  4. git archive HEAD web web-desktop docs | tar -x  → rsync -rlpt --delete → fork main
   5. git tag -a web-v0.9 && push（SOCKS 代理，失败重试）
-  6. gh release create web-v0.9 <4 个产物 + 报告 + CHANGELOG>   # 大文件不挂代理
-  7. gh release edit --latest，并在 web-v0.8 notes 追加旧 zip 说明
-  8. Pages（push 到 main 自动触发）→ curl 线上入口 bundle
+  6. gh release create web-v0.9 <zip + 报告 + CHANGELOG>；两个百 MB 级各自
+     gh release upload --clobber 单独传，全程不挂代理
+  7. gh release edit --latest；给 web-v0.8 notes 追加“旧 zip 是上一代”更正；
+     把报告与 CHANGELOG 也补挂到 app-v0.9（同一次迭代，两边文档一致）
+  8. Pages（push 到 main 自动触发）→ 逐字节核对线上 index.html / 入口 bundle / sw.js
+  9. 核对结果回写报告（f521262 起）→ 再走一遍 4→6，用 --clobber 换掉报告附件
 ```
 
 镜像只带 `web/`、`web-desktop/`、`docs/` 三个目录，**不带 `app/`**（`app/` 由 `app/` 仓库单独镜像，这轮它没变）。
+
+第 9 步是发布流程里真实存在的一段：写完报告→发布→核对线上→再修报告。它会让 fork main 多几个 docs 提交、Pages 多跑几轮，也正是包内固件清单永远追不上线上命名的原因（4.10）。附件换版后 release notes 里没有引用报告的摘要，所以不用改 notes。
 
 ### 11.5 已知限制
 
