@@ -22,7 +22,9 @@
 - 内置图文教程加第 16 节「关于与升级」（现 18 节 21 图）；`docs/MANUAL.zh-CN.md` 加 9.10 并改写第 16 节；两份 README 不再声称“没有申请任何权限”。
 - 字符串各 333 条（中英）。
 
-### 桌面版 `web-v0.9` — 首次独立发布
+### 桌面版 `web-v0.9` — 第一次有自己的版本号与发布说明
+
+> 桌面产物其实先上过 `web-v0.8`：0.8.0 的 dmg 与 win zip 在 2026-10-27 被追加挂进那个 release，但文件名里的版本位是 `0.8.0`、发布说明只是事后补的一段，而且那份 `widscan58-web-0.8.zip` 与它们不是同一代构建。`web-v0.9` 才是三形态按同一个版本号、同一次 `npm run build` 发布的第一轮，`web-v0.8` 的说明里已加了这条更正。
 
 - `web-desktop/`：**Electron 45 壳 + electron-builder 26**，把同一个 `dist/` 变成 macOS Apple Silicon 的 `.app`（dmg）与 Windows x64 的免安装绿色版（zip）。零运行时依赖，主进程只有一个 `main.mjs`。
 - 用自注册的 `app://widscan58/` standard+secure 协议加载页面，这样才是安全上下文、`navigator.serial`/`navigator.usb` 才存在——这是不用 Tauri 的唯一原因：WKWebView 与 WebView2 都没有 Web Serial/WebUSB。
@@ -77,6 +79,7 @@
 - `tools/check_phy_abi.sh`：`objdump` 改为“遍历候选、取第一个可运行版本”，兼容更多本机环境。
 - `CLAUDE.md`、`PLAN.md` 同步（`CONFIG SAVE` 覆盖 GROUP/SINGLE、IDF 版本与目录树重写）。
 - 新增 `docs/PROJECT-REPORT.zh-CN.md`——随 0.8 首次发布的项目总结报告，之后每个版本在其后续写。
+- 同日追加：`widscan58-web-0.8.0-mac-arm64.dmg` 与 `widscan58-web-0.8.0-win-x64.zip` 挂进 `web-v0.8`（未签名）。它们和那个 zip 附件不是同一次构建，这个问题在 0.9 修掉。
 
 ---
 
