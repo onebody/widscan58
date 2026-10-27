@@ -30,6 +30,9 @@ export interface FirmwareVersion {
   note?: string;
   /** Directory under ./firmware/ holding this version's manifest parts. */
   dir: string;
+  /** Absolute URL the version's parts load from (the live site), overriding
+   *  ./firmware/. Set for versions synced from the online index. */
+  base?: string;
   manifest: Manifest;
 }
 
@@ -39,6 +42,12 @@ export interface VersionIndex {
 }
 
 const FIRMWARE_DIR = "./firmware/";
+
+/** The live site's copy of the firmware directory, kept current by the Pages
+ *  deploy on every push. localStorage widscan58.fwUrl overrides it (e.g. a
+ *  mirror); an unreachable URL just falls back to the bundled copy. */
+const ONLINE_FIRMWARE_DIR =
+  (localStorage.getItem("widscan58.fwUrl") ?? "https://onebody.github.io/widscan58/firmware/").replace(/\/*$/, "/");
 
 /** Watchdog registers, from esptool's targets/<chip>.py. esptool-js 0.7 neither
  *  disables these on connect nor implements a watchdog reset for the C5. */
@@ -94,10 +103,32 @@ const offline = (): never => {
   throw new OfflineError();
 };
 
-/** The firmware versions this page offers, from ./firmware/index.json. A page
- *  staged with a single firmware (older tools/pages_firmware.py, `npm run
- *  dev`) still works: it is the only, unlabelled version. */
+/** The firmware versions this page offers. Fresh versions come from the live
+ *  site's index (this page may be the desktop shell, running a copy staged at
+ *  build time); without internet the copy bundled with the page is used, which
+ *  a single-firmware page (older tools/pages_firmware.py, `npm run dev`) still
+ *  provides as its only, unlabelled version. */
 export async function loadVersions(): Promise<VersionIndex> {
+  try {
+    const r = await fetch(ONLINE_FIRMWARE_DIR + "index.json", {
+      cache: "no-cache",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r.ok) {
+      const idx = (await r.json().catch(() => null)) as VersionIndex | null;
+      if (idx?.versions?.length) {
+        return {
+          ...idx,
+          versions: idx.versions.map((v) => ({
+            ...v,
+            base: ONLINE_FIRMWARE_DIR + (v.dir ? v.dir + "/" : ""),
+          })),
+        };
+      }
+    }
+  } catch {
+    // Offline, or the site is unreachable: the bundled copy still flashes.
+  }
   const r = await fetch(FIRMWARE_DIR + "index.json", { cache: "no-cache" }).catch(offline);
   // The dev server answers a missing file with index.html, hence the JSON check.
   const idx = r.ok ? ((await r.json().catch(() => null)) as VersionIndex | null) : null;
@@ -134,7 +165,7 @@ export interface FlashEvents {
  *  firmware. */
 export async function flashFirmware(port: Port, version: FirmwareVersion, ev: FlashEvents): Promise<void> {
   const manifest = version.manifest;
-  const base = FIRMWARE_DIR + (version.dir ? version.dir + "/" : "");
+  const base = version.base ?? FIRMWARE_DIR + (version.dir ? version.dir + "/" : "");
   const { ESPLoader, Transport } = await import("esptool-js").catch(offline);
   // esptool-js writes "Connecting..." and its dots without a newline.
   let pending = "";
