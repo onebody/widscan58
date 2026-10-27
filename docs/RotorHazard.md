@@ -70,6 +70,17 @@ the wiring for a Raspberry Pi (both sides are 3.3 V; no level shifter):
 Do not connect the C5-Zero's 3V3 output to the Pi's 3.3 V, and keep the wires
 under ~30 cm with GND routed alongside.
 
+![Wiring: C5-Zero GP11/GP12/GND (and optionally 5V) to the Raspberry Pi header](../images/rh-uart-wiring.png)
+
+Module pin references — on both C5 boards the silicon UART0 pins are the same,
+only the silkscreen labels differ (GPIO11 = U0TXD, GPIO12 = U0RXD):
+
+| Module | Pinout image |
+|---|---|
+| Raspberry Pi 40-pin header | ![Raspberry Pi 40-pin pinout](../images/rh-uart-pinout-pi.png) |
+| Waveshare ESP32-C5-Zero | ![Waveshare ESP32-C5-Zero pinout](../images/rh-uart-pinout-c5zero.png) |
+| Seeed XIAO ESP32-C5 (D6 = GPIO11, D7 = GPIO12) | ![Seeed XIAO ESP32-C5 pinout](../images/rh-uart-pinout-xiao.png) |
+
 On the Pi:
 
 1. `sudo raspi-config` → Interface Options → Serial Port: login shell **No**,
