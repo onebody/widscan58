@@ -21,8 +21,12 @@ android {
         applicationId = "com.onebody.widscan58"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.8"
+        versionCode = 9
+        versionName = "0.9"
+
+        // Where 检查更新 looks. The releases are published on the fork that carries this app,
+        // and its tags are the only ones the update check reads.
+        buildConfigField("String", "RELEASE_REPO", "\"onebody/widscan58\"")
     }
 
     signingConfigs {

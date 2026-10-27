@@ -52,11 +52,19 @@ from the debug key, older debug installs cannot be upgraded in place — uninsta
 Then connect the board and grant the USB permission dialog. The app is in the
 `USB_DEVICE_ATTACHED` filter, so plugging the board in can open it by itself.
 
+## Permissions
+
+Two entries in the manifest, `INTERNET` and `REQUEST_INSTALL_PACKAGES`, and both serve
+`⋯ → About`: the release check and the hand-over to the system installer. The check runs
+only when the button on that screen is pressed, the downloaded APK is verified against the
+sha256 published with the release before anything is committed, and nothing else in the app
+opens a socket. Location, storage and account permissions are not requested.
+
 ## Documentation
 
 - **The illustrated tutorial ships inside the app**: `⋯ → Help`. It is a local page
-  under `mobile/src/main/assets/help/` — no network access, no permission for it,
-  and it works with the board unplugged. Chinese only for now.
+  under `mobile/src/main/assets/help/`; the WebView loads only that file, so it opens
+  with the network off and the board unplugged. Chinese only for now.
 - **The reference manual** is [`docs/MANUAL.zh-CN.md`](docs/MANUAL.zh-CN.md): every
   control with the values it accepts and the firmware command behind it, plus the
   wire frame format and the `.widscan58` / CSV file layouts. Also Chinese only.
@@ -100,7 +108,7 @@ restarted, and the app runs the handshake again by itself.
 
 - `core/` — pure Kotlin/JVM: frame parser, CRC, stream resync, command runner,
   band plans, the store (segments, max hold, average, per-LO floor), panorama
-  compositing, waterfall rows, channel tiles. No `android.*` imports, 209 tests.
+  compositing, waterfall rows, channel tiles. No `android.*` imports, 216 tests.
 - `mobile/` — Android: USB CDC host (`usb/`), the JSON reply codec, preferences,
   the instrument screen and its canvas views.
 
@@ -153,15 +161,17 @@ The **⋯** menu opens the rest; most of these need the board on the cable:
 - **Power meter** — the attenuator in front of the VTX and per-channel power at the
   board and at the VTX.
 - **Raw I/Q snapshot** — constellation, I/Q traces and spectrum of one capture.
+- **About** — version and build number, the publishing repository, and the update check.
 
 The channel plan editor is under **Scanner setup** → **Channel plan** → **Edit**; the
 lap timer and power meter pages carry their own copy. **Help** opens the bundled
-tutorial, and the launcher's **USB probe** entry still opens the log/probe screen
+tutorial, and **About** is the only screen that talks to GitHub, and only when its
+button is pressed. The launcher's **USB probe** entry still opens the log/probe screen
 for when the board shows up but not as a CDC port.
 
 ## Verification
 
-`:core:test` — 209 JVM tests over the frame codec, stream resync, command runner,
+`:core:test` — 216 JVM tests over the frame codec, stream resync, command runner,
 store, panorama compositing, waterfall rows and channel tiles.
 
 The UI was driven on an `arm64-v8a` emulator (Android 11, 1080x1920) against the

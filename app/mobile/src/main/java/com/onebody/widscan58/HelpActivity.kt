@@ -8,9 +8,10 @@ import android.webkit.WebView
 import android.widget.FrameLayout
 
 /**
- * The whole app has no network code and asks for no permissions; this screen keeps that
- * promise by reading the manual out of the APK itself. Nothing but our own asset file is
- * ever loaded, and the page's script only runs the tap-to-enlarge overlay.
+ * Nothing but our own asset file is ever loaded, and the page's script only runs the
+ * tap-to-enlarge overlay: the tutorial needs no network, which is why it works with the
+ * board in the bag and the phone offline. (The only outbound request in the app is the
+ * release check on the 关于 screen, and that runs when its own button is pressed.)
  */
 class HelpActivity : Activity() {
     private lateinit var page: WebView

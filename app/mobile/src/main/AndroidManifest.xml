@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 关于 asks GitHub what has been published, and 安装 hands the answer to the system
+         installer. Nothing else in the app opens a socket, and neither runs by itself. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <uses-feature
         android:name="android.hardware.usb.host"
         android:required="true" />
@@ -57,6 +62,14 @@
             android:configChanges="screenSize|screenLayout|keyboardHidden|uiMode|density"
             android:exported="false"
             android:label="@string/help_title"
+            android:screenOrientation="portrait" />
+
+        <!-- The update check runs here, and so does the receiver for the installer's answer. -->
+        <activity
+            android:name=".AboutActivity"
+            android:configChanges="screenSize|screenLayout|keyboardHidden|uiMode|density"
+            android:exported="false"
+            android:label="@string/about_title"
             android:screenOrientation="portrait" />
     </application>
 </manifest>

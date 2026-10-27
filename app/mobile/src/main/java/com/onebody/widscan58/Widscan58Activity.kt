@@ -442,6 +442,7 @@ class Widscan58Activity : Activity() {
         menu.menu.add(0, MENU_POWER, 0, R.string.power_title)
         menu.menu.add(0, MENU_RAWIQ, 0, R.string.rawiq_title)
         menu.menu.add(0, MENU_HELP, 0, R.string.help_title)
+        menu.menu.add(0, MENU_ABOUT, 0, R.string.about_title)
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 MENU_GENERAL -> openGeneral()
@@ -455,6 +456,7 @@ class Widscan58Activity : Activity() {
                 MENU_POWER -> openPower()
                 MENU_RAWIQ -> openRawIq()
                 MENU_HELP -> startActivity(Intent(this, HelpActivity::class.java))
+                MENU_ABOUT -> startActivity(Intent(this, AboutActivity::class.java))
                 else -> return@setOnMenuItemClickListener false
             }
             true
@@ -987,6 +989,7 @@ class Widscan58Activity : Activity() {
         /** The menu lists what it adds first, so an id need not sort where the entry sits. */
         private const val MENU_GENERAL = 10
         private const val MENU_HELP = 11
+        private const val MENU_ABOUT = 12
 
         /** The meter's spectrum span before a profile has said what it can tune. */
         private const val SPEC_FULL_SPAN_HZ = 40_000_000L
