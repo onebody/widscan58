@@ -133,9 +133,8 @@ check("Lap timer link without failed reads", r.link && r.link.reads > 100 && r.l
 if (sim) check("Lap timer passes detected", r.passes >= 1, `${r.passes} passes`);
 const enterInput = await page.$(".timer-seat input");
 await enterInput.click();
-await page.keyboard.down("Control");
-await page.keyboard.press("a");
-await page.keyboard.up("Control");
+await enterInput.click();
+await enterInput.evaluate((el) => el.select()); // el.select() works on type=number; keyboard shortcuts and triple click do not
 await enterInput.type("201");
 await page.keyboard.press("Tab");
 await sleep(500);
