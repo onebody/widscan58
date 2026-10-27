@@ -17,7 +17,7 @@ Widscan58 是一个把 **ESP32-C5 的 Wi-Fi 射频前端当作 SDR** 使用的 5
 | 固件 + Web + 桌面壳 + 工具 + 项目文档 | `repo/`，git 仓库，分支 `rh-uart-bridge` @ `63ec23c`（已合入 fork main） | 领先上游 `CapnBry/widscan58` 43 个提交、落后 4 个 | 固件源码（`firmware/src`）约 5,900 行；Web 约 10,200 行（TS 9,800 + 脚本 420）；桌面壳主进程 142 行；工具 1,441 行；项目 Markdown 4,645 行 |
 | Android 原生 App | `app/`，独立 git 仓库，`master` @ `b03b8cc` | `0.9`（versionCode 9） | Kotlin/Java 15,825 行；`:core` 30 个主源文件、27 个测试类；App 侧文档 942 行 |
 | Android 发布包 | `widscan58-app-0.9-release.apk` | 约 1.5 MB，已用 v2 方案签名 | 包名 `com.onebody.widscan58`，minSdk 26 / targetSdk 36 |
-| Web 发布包 | `widscan58-web-0.9.zip` | 构建产物 `dist/` 的压缩包，54 个条目 | 版本 `0.9.0`，可静态托管或 `npm run serve` 本地运行 |
+| Web 发布包 | `widscan58-web-0.9.zip` | 构建产物 `dist/` 的压缩包，48 个文件 / 54 条目 | 版本 `0.9.0`，解压到任意静态目录；`serve.mjs` 在源码目录里，不随 zip 分发 |
 | 桌面版 | `repo/web-desktop/`，产物在其 `release/` 下 | 版本 `0.9.0`，macOS Apple Silicon dmg + Windows x64 免安装 zip，**未签名** | Electron 45 壳，零运行时依赖；约 120 MB / 154 MB |
 
 自动测试共 **282 项**（0.8 发布时实跑；0.9 这轮的复跑见 7.1）：
@@ -128,7 +128,7 @@ Web zip 与两个桌面包**是同一次 `dist/` 构建**：入口 bundle 都是
 
 对比 0.8 的教训：`widscan58-web-0.8.zip` 里是上一代 bundle `index-rlcnjTLh.js`（还没有固件清单线上同步），而同一 release 后来补挂的桌面包已经是新一代——附件不同代是这次把 Web/桌面一起 bump 到 0.9 的直接原因。
 
-`widscan58-app-0.8-release.apk`（1,540,474 字节，`24c799865d3b428c1ebe5f87c32ddcecf702e7724ec05eb637c5dbd94fefed1e`）与 `widscan58-web-0.8.zip`（1,159,362 字节，54 个文件，`aa64461a47c3b30a05062d034caeb285d6cbaf9c8991107e74b3f985acf2ec82`）留在 `app-v0.8` / `web-v0.8` 两个 release 上，仍可下载。
+`widscan58-app-0.8-release.apk`（1,540,474 字节，`24c799865d3b428c1ebe5f87c32ddcecf702e7724ec05eb637c5dbd94fefed1e`）与 `widscan58-web-0.8.zip`（1,159,362 字节，48 个文件 / 54 条目，`aa64461a47c3b30a05062d034caeb285d6cbaf9c8991107e74b3f985acf2ec82`）留在 `app-v0.8` / `web-v0.8` 两个 release 上，仍可下载。
 
 ---
 
@@ -506,6 +506,8 @@ env -u ELECTRON_RUN_AS_NODE ELECTRON_MIRROR=https://npmmirror.com/mirrors/electr
 
 `web/public/firmware/`（gitignore，不进仓库）是构建时放进 `dist/` 的固件快照，桌面壳与下载 zip 离线兜底用的就是它。它**会过期**，所以 0.9 的发布流程固定加一步：构建前从线上 Pages 取回 `firmware/index.json` 与全部部件，逐个按 manifest 的 SHA-256 与字节数校验后再 `npm run build`。这样即使完全断网，下载包烧出来的也是当轮线上那两个版本。
 
+**离线副本必然比线上落后一代，这是构造性的**。Pages 用 fork main 的提交号给 `rh-uart` 命名，而那次构建正是由发布镜像推送触发的——副本却在推送之前就要 staging 完。0.9 发布后实测：线上 `firmware/index.json` 是 `app-v0.9-2-g2a25967`，包内 `dist/sw.js` 与线上 `sw.js` 字节数相同、只差这一个字符串（`app-v0.9-1-g5bf32a5`）。结论有两点：把副本刷到“当时线上最新”是能做到也有做头的（能烧、有校验），但别指望它等于推送之后的那一版；能联网时优先走线上清单（4.6）才是正解。
+
 ---
 
 ## 5. Android App
@@ -712,8 +714,9 @@ App 两份 README 原先的四处不符（49 测试、`Not in this version`、�
 | `aapt2 dump badging widscan58-app-0.9-release.apk` | 包名、`0.9`、versionCode 9、minSdk 26、targetSdk 36 正确；权限含 `INTERNET`、`REQUEST_INSTALL_PACKAGES` |
 | `apksigner verify --print-certs …apk` | v2 签名有效，证书与 0.7/0.8 同一密钥（`4b68a113…b4a37d`） |
 | `npm run dist:mac` / `dist:win` | dmg 与 win zip 产出；`Info.plist` 与 asar 内 `version` 均为 `0.9.0`，asar 内入口 bundle 与 `dist/` 一致 |
-| 固件副本抓取（node + SHA-256 校验） | 8 个文件全部通过 manifest 的 `sha256` 与 `size` 校验，版本 `9999b07` / `app-v0.9-1-g5bf32a5` |
+| 固件副本抓取（node + SHA-256 校验） | 6 个部件全部通过 manifest 的 `sha256` 与 `size` 校验（目录共 9 个文件 / 1,391,961 字节），版本 `9999b07` / `app-v0.9-1-g5bf32a5`；`public/` 与 `dist/` 两份逐条对过线上清单 |
 | `git rev-parse` 子树对比 | `repo/` 的 `firmware`、`web`、`web-desktop`、`tools`、`docs`、`app` 六个 tree 与 fork main 相同 |
+| 发布后线上核对 | Pages run `40481484388` success；`https://onebody.github.io/widscan58/` 的 `index.html` 与 `assets/index-DSC5v4fL.js` 与本地 `dist/` **逐字节相同**；`sw.js` 只差内嵌清单里的 `rh-uart` 提交号（见 4.10）；5 个附件的 `assets[].digest` 与本地 `shasum -a 256` 全部一致 |
 
 合计自动测试 **289 项**（17 + 56 + 216），全部通过。桌面版**没有**任何自动化测试（`main.mjs` 无测试源集）；本轮只重打包并核对产物内容，未在真机上重跑连接与烧录链路——那条链路的证据来自 0.8.0 那一次（见 7.2），而两轮的页面产物是同一个 bundle。
 
@@ -850,7 +853,7 @@ APK 与 0.7 使用同一签名密钥（仓库外的 Android keystore，见 5.1�
 | 形态 | 版本 | 产物 | 字节 | SHA-256 |
 |---|---|---|---:|---|
 | Android App | `0.9` / versionCode 9 | `widscan58-app-0.9-release.apk` | 1,576,961 | `1bd2ea03…05ad0ee` |
-| Web 页面 | `0.9.0` | `widscan58-web-0.9.zip`（`dist/` 54 条目） | 1,163,822 | `31e147a7…04eeebf` |
+| Web 页面 | `0.9.0` | `widscan58-web-0.9.zip`（48 个文件 / 54 条目） | 1,163,822 | `31e147a7…04eeebf` |
 | 桌面版 macOS | `0.9.0` | `widscan58-web-0.9.0-mac-arm64.dmg`（未签名） | 121,504,090 | `70864391…0ebee3a` |
 | 桌面版 Windows | `0.9.0` | `widscan58-web-0.9.0-win-x64.zip`（免安装） | 154,266,380 | `8f424e08…4a5e2fc` |
 
@@ -894,6 +897,8 @@ repo/（rh-uart-bridge）
 - `official` 线上固件（`9999b07`）仍缺 boot 信道修复；用它刷 C5-Zero 会 `ERR boot` 循环，要用 `rh-uart`。
 - 上游又有 4 个提交（`fa948b2`…`9999b07`）没合进本地分支，本轮没有合（合流是独立决定，与发布产物无关）。
 - 报告与 CHANGELOG 里的数字来自 2026-10-27 的一次实跑；固件射频与 UART 验收仍然是空白（7.3）。
+- 包内的离线固件清单按构造落后线上一次提交（4.10）：连网时烧到的是当轮最新，完全断网时烧到的是打包那一轮。两个版本都带 boot 修复与否的差别（`official` 没有），所以断网 + 选 `official` 仍可能踩 `ERR boot`。
+- 网页 zip 里**不含 `serve.mjs`**（它在源码目录 `repo/web/`，不在 `dist/`），解压后想本地跑要用自己的静态服务。发布说明里已改成这个说法。
 
 ---
 
