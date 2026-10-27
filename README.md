@@ -13,9 +13,9 @@ or a simple standalone lap timer running in the web browser.
 
 widscan58 is a words smash-em-up of WiFi, Video, Scan and 5.8GHz
 
-## ▶ [Open the live web UI](https://capnbry.github.io/widscan58/)
+## ▶ [Open the live web UI](https://onebody.github.io/widscan58/)
 
-**https://capnbry.github.io/widscan58/** (Chrome, Edge or Firefox on desktop,
+**https://onebody.github.io/widscan58/** (Chrome, Edge or Firefox on desktop,
 or Chrome on Android)
 
 ![The Widscan58 web UI scanning Raceband R1–R8 on an ESP32-C5](images/webui.png)
@@ -78,7 +78,7 @@ green).
 ## Getting started
 
 1. Plug the ESP32-C5 into your computer or Android phone over USB.
-2. Open the [web UI](https://capnbry.github.io/widscan58/) in Chrome, Edge or
+2. Open the [web UI](https://onebody.github.io/widscan58/) in Chrome, Edge or
    Firefox on desktop, or Chrome on Android.
 3. Click **Flash device** and follow the steps to install the firmware; pick a
    firmware version if the page offers more than one.
