@@ -14,7 +14,7 @@ Widscan58 是一个把 **ESP32-C5 的 Wi-Fi 射频前端当作 SDR** 使用的 5
 
 当前本地版本由三块组成：
 
-| 固件 + Web + 桌面壳 + 工具 + 项目文档 | `repo/`，git 仓库，分支 `rh-uart-bridge` @ `f521262`（已合入 fork main） | 领先上游 `CapnBry/widscan58` 45 个提交、落后 4 个 | 固件源码（`firmware/src`）约 5,900 行；Web 约 10,200 行（TS 9,800 + 脚本 420）；桌面壳主进程 142 行；工具 1,441 行；仓库 Markdown 7,252 行（根目录 1,895 + `docs/` 5,357） |
+| 固件 + Web + 桌面壳 + 工具 + 项目文档 | `repo/`，git 仓库，分支 `rh-uart-bridge` @ `f521262`（已合入 fork main） | 领先上游 `CapnBry/widscan58` 45 个提交、落后 4 个 | 固件源码（`firmware/src`）约 5,900 行；Web 约 10,200 行（TS 9,800 + 脚本 420）；桌面壳主进程 142 行；工具 1,441 行；仓库 Markdown 7,257 行（根目录 1,895 + `docs/` 5,362） |
 | Android 原生 App | `app/`，独立 git 仓库，`master` @ `b03b8cc` | `0.9`（versionCode 9） | Kotlin/Java 15,825 行；`:core` 30 个主源文件、27 个测试类；App 侧文档 942 行 |
 | Android 发布包 | `widscan58-app-0.9-release.apk` | 约 1.5 MB，已用 v2 方案签名 | 包名 `com.onebody.widscan58`，minSdk 26 / targetSdk 36 |
 | Web 发布包 | `widscan58-web-0.9.zip` | 构建产物 `dist/` 的压缩包，48 个文件 / 54 条目 | 版本 `0.9.0`，解压到任意静态目录；`serve.mjs` 在源码目录里，不随 zip 分发 |
@@ -686,8 +686,8 @@ adb install -r mobile/build/outputs/apk/debug/mobile-debug.apk
 | `app/README.md` | 210 | App 用户/开发者 | 已与代码对齐（瀑布行高、增益上限、语言行为、已实现功能清单于 2026-10-27 修正）；0.9 两条权限与 216 个测试数已核实一致 |
 | `app/README.zh-CN.md` | 180 | 同上 | 同上，与英文版同步修正（`216 个测试`、`清单里只有两条`） |
 | `app/docs/MANUAL.zh-CN.md` | 552 | App 参考手册 | 内容全；适用版本 `0.9`，含 9.10「关于与升级」 |
-| `repo/docs/PROJECT-REPORT.zh-CN.md` | 964 | 项目总结 | 架构、验证现状、风险与各轮发布内容 |
-| `repo/docs/CHANGELOG.zh-CN.md` | 123 | 所有人 | 0.1 → 0.9 的逐版变更列表，四个发布物合并在一条时间线上 |
+| `repo/docs/PROJECT-REPORT.zh-CN.md` | 966 | 项目总结 | 架构、验证现状、风险与各轮发布内容 |
+| `repo/docs/CHANGELOG.zh-CN.md` | 126 | 所有人 | 0.1 → 0.9 的逐版变更列表，四个发布物合并在一条时间线上 |
 | `app/mobile/src/main/assets/help/index.html` | 548 | 应用内教程 | 18 节 21 图、离线、当前；仅中文 |
 
 桌面版没有独立 README：用法与限制写在 `web-v0.9` 的发布说明与本报告 4.9 里（`web-desktop/` 目录内暂无文档，是下一份该补的）。
@@ -824,6 +824,8 @@ App 两份 README 原先的四处不符（49 测试、`Not in this version`、�
 | `web-v0.8` | 附件 `widscan58-web-0.8.zip`（1,159,362 字节） | `repo/web`，与 GitHub Pages 同一提交构建 |
 
 两个附件的 SHA-256 已写入 1.4 节，发布后还会与 GitHub 回填的 `assets[].digest` 对一遍。
+
+`web-v0.8` 后来（同一天）追加挂上了 `widscan58-web-0.8.0-mac-arm64.dmg`（`683ccbc9…db2635`）与 `widscan58-web-0.8.0-win-x64.zip`（`d330f9e1…68eed0`）——桌面产物的第一轮公开下载。它们与那一份 `widscan58-web-0.8.zip` 不是同一次构建，这个不一致由 0.9 修正，`web-v0.8` 的发布说明里也追加了更正段落（11.4 第 7 步）。
 
 ### 10.2 0.7 以来的变化
 
