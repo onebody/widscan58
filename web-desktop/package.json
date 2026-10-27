@@ -1,0 +1,64 @@
+{
+  "name": "widscan58-desktop",
+  "productName": "widscan58",
+  "version": "0.8.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "description": "widscan58 web page packaged as a desktop app (Web Serial / Web USB)",
+  "author": "widscan58",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "sync-dist": "rm -rf dist && cp -R ../web/dist dist",
+    "dist:mac": "npm run sync-dist && electron-builder --mac dmg --arm64",
+    "dist:win": "npm run sync-dist && electron-builder --win zip --x64"
+  },
+  "build": {
+    "appId": "org.widscan58.web",
+    "productName": "widscan58",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.mjs",
+      "package.json",
+      "dist/**/*"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "identity": null,
+      "extendInfo": {
+        "NSSupportsAutomaticTermination": false,
+        "NSSupportsSuddenTermination": false,
+        "NSAppSleepDisabled": true
+      },
+      "artifactName": "widscan58-web-${version}-mac-arm64.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "widscan58-web-${version}-win-x64.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  }
+}
