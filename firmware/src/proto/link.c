@@ -33,6 +33,12 @@
 static RingbufHandle_t queues[LINK_COUNT];
 static volatile uint32_t drops;
 static volatile bool streaming; /* frames allowed (link_set_streaming); off at boot */
+static volatile link_sink_t frame_sink = LINK_USB; /* where frames go (link_set_frame_sink) */
+
+/* Largest frame we may have to build for the UART: SPECTRUM with 1024 bins.
+ * RAWIQ never goes there (its chunks exceed the TX ring anyway). */
+#define FRAME_UART_MAX (sizeof(frame_header_t) + sizeof(frame_spectrum_t) + 1024 + 4)
+static uint8_t uart_frame_buf[FRAME_UART_MAX];
 
 /* Only the USB sink is queued: its driver drops bytes when no host reads the
  * FIFO, so a writer task and a deep ring keep the scanners off that path. The
@@ -87,7 +93,28 @@ static IRAM_ATTR bool frame_put(uint8_t type, const void *a, size_t alen, const 
     if (!streaming) return false; /* not a drop: nobody is listening for frames */
     size_t len = alen + blen;
     size_t total = sizeof(frame_header_t) + len + 4;
-    if (len > 0xffff || (min_free && xRingbufferGetCurFreeSize(queues[LINK_USB]) < total + min_free)) {
+    if (len > 0xffff) {
+        drops++;
+        return false;
+    }
+    if (frame_sink == LINK_UART && type != FRAME_RAWIQ) {
+        /* No queue here (the C5 heap cannot afford one): uart_link_write
+         * blocks only as long as the line takes to drain, so the caller's
+         * pacing (scanner uart_pace) is the backpressure. */
+        if (total > sizeof(uart_frame_buf)) {
+            drops++;
+            return false;
+        }
+        uint8_t *p = uart_frame_buf;
+        frame_header_t h = {FRAME_SYNC0, FRAME_SYNC1, type, PROTO_VERSION, (uint16_t)len};
+        memcpy(p, &h, sizeof(h));
+        if (alen) memcpy(p + sizeof(h), a, alen);
+        if (blen) memcpy(p + sizeof(h) + alen, b, blen);
+        uint32_t crc = esp_rom_crc32_le(0, p, sizeof(h) + len);
+        memcpy(p + sizeof(h) + len, &crc, 4);
+        return link_raw_to(LINK_UART, p, total);
+    }
+    if (min_free && xRingbufferGetCurFreeSize(queues[LINK_USB]) < total + min_free) {
         drops++;
         return false;
     }
@@ -136,6 +163,11 @@ bool link_text(const char *text) { return link_text_to(LINK_USB, text); }
 
 void link_set_streaming(bool on) { streaming = on; }
 IRAM_ATTR bool link_streaming(void) { return streaming; }
+
+void link_set_frame_sink(link_sink_t sink) {
+    if ((unsigned)sink < LINK_COUNT) frame_sink = sink;
+}
+link_sink_t link_frame_sink(void) { return frame_sink; }
 
 void link_flush(void) {
     size_t size;

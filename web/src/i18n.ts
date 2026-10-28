@@ -128,8 +128,8 @@ const zh: Record<string, string> = {
   "Web Serial is not available: use Chrome, Edge or Opera over https or localhost.":
     "Web Serial 不可用：请使用 Chrome、Edge 或 Opera，并通过 https 或 localhost 打开。",
   "Web Serial unsupported in this browser": "此浏览器不支持 Web Serial",
-  "Flashing needs Web Serial (Chrome, Edge or Opera on a computer) or WebUSB (Chrome on Android).":
-    "烧录需要 Web Serial（电脑上的 Chrome、Edge 或 Opera）或 WebUSB（Android 上的 Chrome）。",
+  "This device cannot flash: open the page at localhost or over https in Chrome/Edge, with the board plugged into this computer.":
+    "此设备无法烧录：请在 Chrome/Edge 中通过 localhost 或 https 打开本页，并把板子插到这台电脑上。",
   "{v} available": "{v} 可用",
   "Reboot the device?": "重启设备？",
   "Reboot into the ROM download mode? The scanner stops until the device is reflashed or reset.":
@@ -495,4 +495,35 @@ const zh: Record<string, string> = {
   "RH: {msg}": "RH：{msg}",
   "RotorHazard pilot": "RotorHazard 飞手",
   "Enter a full http:// or https:// address.": "请输入完整的 http:// 或 https:// 地址。",
+  "RotorHazard on ({port}) — click to stop": "RotorHazard 计时中（{port}）— 点击停止",
+  "RotorHazard on — click to stop": "RotorHazard 计时中 — 点击停止",
+  "RotorHazard off — click to start": "RotorHazard 已停止 — 点击启动",
+  "{name} — RotorHazard timing": "{name} — RotorHazard 计时中",
+  "{name} — start RotorHazard timing": "{name} — 启动 RotorHazard 计时",
+  "Select a board…": "选择板卡…",
+  "Connect to a board bridged by the server this page came from": "连接到本页服务器桥接的板子（本地 USB 或无线节点）",
+  "Wireless node {name}": "无线节点 {name}",
+  "{name} (RotorHazard only)": "{name}（仅 RH 计圈）",
+  "This board is wired to the host's UART pins: RotorHazard owns it, and the firmware refuses to scan there.":
+    "这块板接在主机 UART 引脚上：归 RotorHazard 独占，固件也拒绝在该链路上扫频。",
+  "this board is on the host's UART link: RotorHazard only, the firmware refuses to scan there":
+    "这块板在主机 UART 链路上：只供 RotorHazard，固件拒绝在其上扫频",
+  "{name} (in use)": "{name}（占用中）",
+  "No board or relay node is available on the server.": "服务器上没有可用的板子或中继节点。",
+  "The server reports no board and no relay node.": "服务器上没有板子，也没有中继节点。",
+  "the server has no board to bridge": "服务器上没有可桥接的板子",
+  "the relay node went offline": "中继节点已离线",
+  "Connect to the scanner board bridged by the server this page came from": "连接本页服务器桥接的扫频板卡（无线/远程）",
+  "the board is already bridged to another page": "板卡正被另一个页面占用（同一时间只允许一个页面连接）",
+  "the board's serial port is held by another program — with one board shared with RotorHazard, click the board button first":
+    "串口正被其他程序占用——单板与 RotorHazard 共用时，请先点顶栏的 RotorHazard 按钮停掉它",
+  "Starts or stops the RotorHazard server on the host to free the board's radio.":
+    "启动/停止主机上的 RotorHazard 服务，腾出或交还板卡的射频。",
+  "RH server stopped; the radio is free in ~2 s (the page retries on its own).":
+    "RH 服务已停止；约 2 秒后射频空闲（页面会自动重试）。",
+  "RH server started; it takes the radio back on its first byte.": "RH 服务已启动；它的首个字节会把射频抢回。",
+  "Restoring RotorHazard failed ({why})": "恢复 RH 失败（{why}）",
+  "Switching the board failed ({why})": "板卡切换失败（{why}）",
+  "Hint: RotorHazard may hold the radio — the board button in the header frees it.":
+    "提示：射频可能正被 RotorHazard 占用——顶栏的板卡按钮可释放它。",
 };

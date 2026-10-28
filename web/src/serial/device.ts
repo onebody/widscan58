@@ -139,8 +139,9 @@ export class WebSerialTransport implements Transport {
 export class WebSocketTransport implements Transport {
   readonly name: string;
   private ws: WebSocket | null = null;
-  constructor(private url: string) {
-    this.name = `Bridge ${url}`;
+  // `label` is the board's name: the URL says nothing a reader wants to see.
+  constructor(private url: string, label?: string) {
+    this.name = label ? `Bridge ${label}` : `Bridge ${url}`;
   }
 
   open(onBytes: (chunk: Uint8Array) => void, onClose: (why: string) => void): Promise<void> {

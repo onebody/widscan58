@@ -45,6 +45,8 @@ typedef struct {
     uint8_t spec_detector;   /* 0 mean, 1 max */
     uint8_t fft_type;        /* psd_fft_t */
     uint32_t max_rotation_hz; /* rotation rate cap (scanner.c, MAX_ROTATION_HZ); 0 = none */
+    bool uart_pace;          /* frames go to the UART: cap rotations so the stream
+                              * fits the line rate (scanner.c, uart_stream_cap) */
     /* Debug: radio power-down while the rotation throttle waits (radio_idle_enter),
      * when the wait is at least phy_idle_min_us. */
     uint8_t phy_idle;
@@ -60,7 +62,7 @@ void scanner_get_plan(plan_t *plan);
 typedef enum { SCAN_REQ_RAWIQ, SCAN_REQ_RECAL, SCAN_REQ_FFTEVAL_SYNTH, SCAN_REQ_FFTEVAL_LIVE } scan_req_type_t;
 typedef struct {
     scan_req_type_t type;
-    link_sink_t sink;        /* where the reply text goes; frames stay on USB */
+    link_sink_t sink;        /* where the reply text goes */
     uint32_t lo_khz;
     uint16_t n;
     uint8_t rate_code;
