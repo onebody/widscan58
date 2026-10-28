@@ -566,6 +566,12 @@ main.shared { padding-top: 0; }
 .console-row { display: flex; gap: 6px; margin-top: 6px; }
 .console-row input { flex: 1; font-family: var(--mono); }
 .session-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+/* Board/node picker: names can be long (/dev/widscan58-<serial>), so it is
+   capped and ellipsised rather than pushing the row apart. */
+.ep-select { max-width: 220px; text-overflow: ellipsis; }
+@media (max-width: 640px) { .ep-select { max-width: 150px; } }
+/* Board list under Connect: anchored right so it stays inside the viewport. */
+.board-menu { left: auto; right: 0; min-width: 240px; }
 .muted { color: var(--muted); }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }

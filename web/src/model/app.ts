@@ -93,11 +93,16 @@ export class App {
       this.store.addLog("error", `not connected: ${line}`);
       return null;
     }
+    // A batch (restore/start) outlives the link when a bridge or relay node
+    // drops; one error per remaining command would bury the real reason.
+    if (!this.device.connected) return null;
     this.store.addLog("tx", line);
     try {
       const item = await this.device.command(line);
       return item.kind === "text" ? item.line : "frame";
     } catch (e) {
+      // The link dropped mid-command; the close reason is already logged.
+      if (!this.device.connected) return null;
       this.store.addLog("error", (e as Error).message);
       return null;
     }
@@ -111,10 +116,12 @@ export class App {
   /** Put the device in the stored state (channel plan, mode, gain). */
   async restoreDevice(device: Device) {
     for (const cmd of restoreCommands(this.deviceSettings)) {
+      if (!device.connected) return;
       this.store.addLog("tx", cmd);
       try {
         await device.command(cmd);
       } catch (e) {
+        if (!device.connected) return;
         this.store.addLog("error", (e as Error).message);
       }
     }

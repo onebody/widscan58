@@ -67,12 +67,42 @@ registerServiceWorker(); // installable, works offline
 // ---- Header -----------------------------------------------------------------
 const dot = el("span", { class: "dot" });
 const connText = el("span", {}, "Disconnected");
-const connectBtn = el("button", { class: "primary" }, "Connect"); // becomes Disconnect while connected
-const flashBtn = el("button", { title: "Install the scanner firmware on a board" }, "Flash device");
+const connectBtn = el("button", { class: "primary", "aria-haspopup": "menu", "aria-expanded": "false" }, "Connect"); // becomes Disconnect while connected
+// Flashing needs the page itself to own the board's USB port, which browsers
+// only allow on https or localhost. A LAN http page (the Pi one) can never do
+// it, so the button is shown disabled rather than failing on click.
+const flashAvailable = WebSerialTransport.supported();
+const flashBtn = el("button", {}, "Flash device");
+function updateFlashBtn() {
+  flashBtn.disabled = !flashAvailable;
+  flashBtn.title = flashAvailable
+    ? t("Install the scanner firmware on a board")
+    : t(
+        "This device cannot flash: open the page at localhost or over https in Chrome/Edge, with the board plugged into this computer.",
+      );
+}
+updateFlashBtn();
 const simBtn = el("button", {}, "Simulate");
 const replayInput = el("input", { type: "file", accept: ".widscan58", style: "display:none" }) as HTMLInputElement;
 const replayBtn = el("button", {}, "Replay…");
 const recordBtn = el("button", { title: "Record the raw device stream to a .widscan58 file" }, "● Record");
+// Server endpoints: boards bridged by the server this page came from
+// (serve.mjs /api/endpoints) plus relay nodes that connected in to it — the
+// wireless/remote way to scan, and the only way from a plain http LAN address
+// without Web Serial. The first entry means "not connected": picking one
+// connects, picking it back disconnects.
+const endpointSelect = el("select", {
+  hidden: "",
+  class: "ep-select",
+  title: "Connect to a board bridged by the server this page came from",
+  "aria-label": "Server endpoint",
+}) as HTMLSelectElement;
+endpointSelect.append(new Option("Select a board…", ""));
+// Connect opens this list of boards the server can bridge; picking one connects.
+const boardMenu = el("div", { class: "menu board-menu", hidden: "", role: "menu" }) as HTMLDivElement;
+// Board link switch (serve.mjs /api/mode): starts/stops the RotorHazard server
+// to free the board's UART for scanning, or hands the radio back to RH.
+const boardBtn = el("button", { hidden: "" });
 // Menu: the page / device protocol (monitor, lap timer, or power meter on
 // the monitor protocol), GPIO Configure,
 // the theme, and about: the project link and the connected device's firmware
@@ -119,7 +149,7 @@ const header = el(
   { class: "top" },
   el("span", { class: "brand" }, el("span", { class: "menu-wrap" }, menuBtn, menu), el("h1", {}, "Widscan58")),
   el("span", { class: "conn-state" }, dot, connText),
-  el("span", { class: "actions" }, connectBtn, flashBtn),
+  el("span", { class: "actions" }, boardBtn, endpointSelect, el("span", { class: "menu-wrap" }, connectBtn, boardMenu), flashBtn),
 );
 // Session sources other than a real device, shown in the protocol console.
 const sessionRow = el("div", { class: "session-row" }, simBtn, replayBtn, replayInput, recordBtn);
@@ -184,12 +214,15 @@ function showPage() {
 let starting: Promise<void> | null = null;
 function startMode(device: Device): Promise<void> {
   const run = async () => {
+    if (!device.connected) return; // the link went away before we asked
     let proto: string | null = null;
     try {
       proto = await device.text("PROTOCOL?", 1500);
     } catch (e) {
       store.addLog("info", `no protocol switch (${(e as Error).message}); monitor mode only`);
     }
+    // A relay node or bridge can drop mid-handshake; do not keep talking to it.
+    if (!device.connected) return;
     legacyFirmware = proto === null;
     if (legacyFirmware && app.settings.uiMode === "timer") app.settings.uiMode = "monitor";
     showPage();
@@ -203,7 +236,15 @@ function startMode(device: Device): Promise<void> {
       if (device.rh) {
         await app.send("PROTOCOL MONITOR");
         device.exitRh();
-      } else if (!legacyFirmware) await app.send("PROTOCOL MONITOR");
+      } else if (!legacyFirmware) {
+        const got = await app.send("PROTOCOL MONITOR");
+        // A bridge link cannot take the radio while the RH server polls the
+        // board's UART (ERR uart_rh in the log); the watchdog keeps retrying.
+        if (!got && device.transport instanceof WebSocketTransport && !uartHinted) {
+          uartHinted = true;
+          store.addLog("info", t("Hint: RotorHazard may hold the radio — the board button in the header frees it."));
+        }
+      }
       await syncDevice(device);
       if (app.settings.uiMode === "power") await enterPower(device);
       else await leavePower(device);
@@ -299,6 +340,11 @@ function relabelChrome() {
   setState(connState, connKey, connParams);
   showPage(); // also updates the banner and firmware text
   syncRhDataNote();
+  if (boardLinkApi) {
+    renderEndpoints();
+    updateBoardBtn();
+  }
+  updateFlashBtn();
   if (recorder.active) recordBtn.textContent = t("■ Stop recording");
 }
 
@@ -376,9 +422,11 @@ async function syncDevice(device: Device) {
   if (device.rh) return; /* lap timer mode: the page does its own setup */
   await app.restoreDevice(device);
   for (const cmd of ["INFO", "PROFILE?", "STATUS?", "SPURS?"]) {
+    if (!device.connected) return;
     try {
       await device.command(cmd);
     } catch (e) {
+      if (!device.connected) return; // the close reason is already logged
       store.addLog("error", (e as Error).message);
     }
   }
@@ -392,10 +440,12 @@ let monitorScan: { win: string; spec: string } | null = null;
 const powerScan = (st: typeof store.status) => !!st && st.rssi_hz === POWER_WIN_HZ && st.spec_every === 0;
 async function sendAll(device: Device, cmds: string[]) {
   for (const cmd of cmds) {
+    if (!device.connected) return;
     store.addLog("tx", cmd);
     try {
       await device.command(cmd);
     } catch (e) {
+      if (!device.connected) return; // the close reason is already logged
       store.addLog("error", (e as Error).message);
     }
   }
@@ -426,12 +476,27 @@ async function connect(transport: Transport, readOnly = false) {
   device.onRaw((chunk) => recorder.add(chunk));
   if (transport instanceof WebSerialTransport) transport.onWarning = (msg) => store.addLog("info", `serial: ${msg}`);
   device.onClose = (why) => {
-    store.addLog("info", `connection closed: ${why}`);
+    // serve.mjs sends short codes for the reasons worth explaining.
+    const BRIDGE_WHY: Record<string, string> = {
+      busy: "the board is already bridged to another page",
+      busyport: "the board's serial port is held by another program — with one board shared with RotorHazard, click the board button first",
+      "no-serial": "the server has no board to bridge",
+      "node offline": "the relay node went offline",
+      "uart-only": "this board is on the host's UART link: RotorHazard only, the firmware refuses to scan there",
+    };
+    const whyText = BRIDGE_WHY[why] ? t(BRIDGE_WHY[why]) : why;
+    store.addLog("info", `connection closed: ${whyText}`);
     if (app.device === device) {
       app.device = null;
       if (why === "replay finished") setState("off", "Replay finished");
-      else setState("err", "Disconnected ({why})", { why });
+      else setState("err", "Disconnected ({why})", { why: whyText });
       stopRecording();
+    }
+    if (transport instanceof WebSocketTransport && transport === bridgeTransport) {
+      bridgeTransport = null;
+      bridgedEp = "";
+      endpointSelect.value = "";
+      void refreshEndpoints();
     }
   };
   try {
@@ -469,12 +534,311 @@ async function disconnect() {
 connectBtn.onclick = async () => {
   if (app.device) return disconnect();
   if (!WebSerialTransport.supported()) {
+    // Served by serve.mjs: the page's own server bridges the board over a
+    // WebSocket, which works from a plain http LAN address without Web Serial.
+    if (boardLinkApi) {
+      if (!boardMenu.hidden) return closeBoardMenu();
+      await pickBridge();
+      return;
+    }
     store.addLog("error", "Web Serial is not available: use Chrome, Edge or Opera over https or localhost.");
     setState("err", "Web Serial unsupported in this browser");
     return;
   }
   userDisconnected = false;
   void connect(new WebSerialTransport());
+};
+
+// ---- Board link (single board shared by scanning and RotorHazard) ----------------
+// serve.mjs answers /api/mode only when started with the RH start/stop
+// commands; GitHub Pages (and any other host) never does, so the button and
+// the bridge fallback stay hidden there.
+let boardLinkApi = false;
+let boardLink: "rh" | "scan" | "unknown" = "unknown";
+let uartHinted = false;
+let uartPort = ""; // the host's UART board (serve.mjs --rh-serial), once the list says so
+function updateBoardBtn() {
+  // Name the port: "scanning / RotorHazard" alone reads like a board picker,
+  // which is the endpoint list's job, and never says which board RH drives.
+  boardBtn.textContent =
+    boardLink === "rh"
+      ? uartPort
+        ? t("RotorHazard on ({port}) — click to stop", { port: uartPort })
+        : t("RotorHazard on — click to stop")
+      : t("RotorHazard off — click to start");
+  boardBtn.title = t("Starts or stops the RotorHazard server on the host to free the board's radio.");
+}
+boardBtn.onclick = async () => {
+  if (boardBtn.disabled) return;
+  boardBtn.disabled = true;
+  const to = boardLink === "scan" ? "rh" : "scan";
+  // Bridging the UART board is what stopped RH: leaving the bridge starts it
+  // again on the server, so handing the radio back is just a disconnect.
+  if (to === "rh" && bridgedEp.startsWith("uart:") && app.device) {
+    await disconnect().catch(() => {});
+    boardBtn.disabled = false;
+    return;
+  }
+  try {
+    // Only one board on the server means RH and the page share its tty (the
+    // legacy single-board switch): leave it silent so RH can open the port.
+    // With several boards RH has its own (the UART one) and scanning goes on.
+    const sharedBoard =
+      bridgedEp.startsWith("serial:") && endpoints.filter((e) => e.kind === "serial").length === 1;
+    if (to === "rh" && app.device && sharedBoard) await disconnect();
+    const r = await fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: to }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { state?: typeof boardLink; error?: string };
+    if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+    boardLink = j.state ?? to;
+    uartHinted = false;
+    updateBoardBtn();
+    store.addLog(
+      "info",
+      to === "scan"
+        ? t("RH server stopped; the radio is free in ~2 s (the page retries on its own).")
+        : t("RH server started; it takes the radio back on its first byte."),
+    );
+    if (to === "scan") {
+      if (app.device) void startMode(app.device);
+      // One board shared with RH: the server lets go of the tty as it stops,
+      // so wait a moment before the bridge opens it. An explicit stop is not
+      // undone by this connect, so RH stays down until the next user connect.
+      // Scanning is the point of this state: pick up a board rather than
+      // parking on an empty page — the endpoint list still switches boards.
+      else setTimeout(() => void resumeScan(), 1500);
+    }
+  } catch (e) {
+    setState("err", "Switching the board failed ({why})", { why: (e as Error).message });
+  } finally {
+    boardBtn.disabled = false;
+  }
+};
+void (async () => {
+  try {
+    const r = await fetch("/api/mode", { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return;
+    const j = (await r.json()) as { state?: "rh" | "scan" | "unknown"; stop?: boolean; start?: boolean };
+    boardLinkApi = true;
+    boardLink = j.state ?? "unknown";
+    const inScan = j.state === "scan";
+    // Without both commands the switch cannot do anything: this is a computer
+    // running serve.mjs for its own USB boards, where RotorHazard is not the
+    // page's business. Offer only what works.
+    if (j.stop && j.start) {
+      boardBtn.hidden = false;
+      updateBoardBtn();
+    }
+    endpointSelect.hidden = false;
+    void refreshEndpoints();
+    setInterval(refreshEndpoints, 5000); // boards plug in, relay nodes come and go
+    // The host is already in scan mode: this page exists to show the stream,
+    // so pick up a board instead of parking on an empty window.
+    if (inScan) setTimeout(() => void resumeScan(), 800);
+  } catch {
+    /* GitHub Pages or another static host: no board link control */
+  }
+})();
+// ---- Server endpoints (serve.mjs) ------------------------------------------------
+// A server lists what it can bridge: its own boards (/dev/widscan58*) and the
+// relay nodes that connected in. The page picks one at connect time; the
+// placeholder option means "not connected".
+// "uart" is the board on the host's own UART pins. With a stop command
+// configured the server frees it (stops RotorHazard) and it scans like a USB
+// board; otherwise it is shown so the list is complete, but only for RH.
+type Endpoint = {
+  id: string;
+  kind: "serial" | "remote" | "uart";
+  label: string;
+  path?: string;
+  online: boolean;
+  busy: boolean;
+  scannable?: boolean;
+};
+const canScan = (e: Endpoint) => e.online && (e.kind !== "uart" || !!e.scannable);
+let endpoints: Endpoint[] = [];
+let bridgedEp = ""; // the endpoint this page is bridged to, if any
+let bridgeTransport: WebSocketTransport | null = null; // guards the onClose reset when switching endpoints
+
+function endpointName(e: Endpoint): string {
+  if (e.kind === "remote") return t("Wireless node {name}", { name: e.label });
+  if (e.kind === "uart" && !e.scannable) return t("{name} (RotorHazard only)", { name: e.label });
+  return e.label;
+}
+
+function renderEndpoints() {
+  const keep = endpointSelect.value;
+  endpointSelect.replaceChildren(new Option(t("Select a board…"), ""));
+  for (const e of endpoints) {
+    const name = endpointName(e);
+    const opt = new Option(e.busy && !(e.kind === "uart" && !e.scannable) ? t("{name} (in use)", { name }) : name, e.id);
+    opt.disabled = e.kind === "uart" && !e.scannable;
+    endpointSelect.append(opt);
+  }
+  endpointSelect.value = [...endpointSelect.options].some((o) => o.value === keep) ? keep : bridgedEp;
+  endpointSelect.disabled = endpoints.length === 0;
+  endpointSelect.title = endpoints.length
+    ? t("Connect to a board bridged by the server this page came from")
+    : t("The server reports no board and no relay node.");
+}
+
+let drawnEndpoints = "\u0000"; // what the select currently shows
+async function refreshEndpoints() {
+  try {
+    const r = await fetch("/api/endpoints", { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return;
+    const j = (await r.json()) as { endpoints?: Endpoint[] };
+    endpoints = j.endpoints ?? [];
+    const port = endpoints.find((e) => e.kind === "uart")?.label ?? "";
+    if (port !== uartPort) {
+      uartPort = port;
+      if (!boardBtn.hidden) updateBoardBtn();
+    }
+    const key = endpoints
+      .map((e) => `${e.id}:${e.online ? 1 : 0}:${e.busy ? 1 : 0}:${e.scannable ? 1 : 0}`)
+      .join("|");
+    // Rebuilding the <option>s closes the browser's own picker and drops the
+    // tap that was about to select a board, so leave the list alone unless it
+    // really changed — and never while the picker is open.
+    if (key === drawnEndpoints || document.activeElement === endpointSelect) return;
+    drawnEndpoints = key;
+    renderEndpoints();
+  } catch {
+    /* server went away; the next poll tries again */
+  }
+}
+
+function closeBoardMenu() {
+  boardMenu.hidden = true;
+  connectBtn.setAttribute("aria-expanded", "false");
+}
+boardMenu.onclick = (e) => e.stopPropagation();
+// Capture phase: some views stop the click on their controls (channel
+// checkboxes), and those clicks must still dismiss the list.
+document.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (boardMenu.hidden) return;
+    const target = e.target as Node;
+    if (boardMenu.contains(target) || connectBtn.contains(target)) return;
+    closeBoardMenu();
+  },
+  true,
+);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeBoardMenu();
+});
+
+/** Connect asks which board to scan when the server offers a choice. */
+async function pickBridge(opts: { restoreRh?: boolean } = {}) {
+  await refreshEndpoints(); // boards may have been plugged or picked up since the last poll
+  const usable = endpoints.filter(canScan);
+  if (!usable.length) {
+    store.addLog("error", t("No board or relay node is available on the server."));
+    return;
+  }
+  if (usable.length === 1) return connectBridge(usable[0].id, opts);
+  boardMenu.replaceChildren(el("div", { class: "menu-label" }, t("Select a board…")));
+  for (const e of endpoints) {
+    if (!e.online) continue;
+    if (e.kind === "uart" && !e.scannable) {
+      // Never a scan source — the firmware refuses PROTOCOL MONITOR on that
+      // link — but it is the board the user can "switch to": tapping it hands
+      // the radio back to RH timing.
+      const on = boardLink === "rh";
+      const item = el(
+        "button",
+        { class: "menu-item", role: "menuitemradio", "aria-checked": on ? "true" : "false" },
+        on ? t("{name} — RotorHazard timing", { name: e.label }) : t("{name} — start RotorHazard timing", { name: e.label }),
+      ) as HTMLButtonElement;
+      item.title = t("This board is wired to the host's UART pins: RotorHazard owns it, and the firmware refuses to scan there.");
+      item.onclick = () => {
+        closeBoardMenu();
+        if (boardLink !== "rh") boardBtn.click(); // same path as the header button (shared-board case included)
+      };
+      boardMenu.append(item);
+      continue;
+    }
+    const name = endpointName(e);
+    const item = el("button", { class: "menu-item", role: "menuitem" }, e.busy ? t("{name} (in use)", { name }) : name) as HTMLButtonElement;
+    item.disabled = e.busy;
+    item.onclick = () => {
+      closeBoardMenu();
+      connectBridge(e.id, opts);
+    };
+    boardMenu.append(item);
+  }
+  boardMenu.hidden = false;
+  connectBtn.setAttribute("aria-expanded", "true");
+}
+
+function connectBridge(id?: string, opts: { restoreRh?: boolean } = {}) {
+  if (app.device) return;
+  // The auto-pick never takes the UART board: selecting it means stopping
+  // RotorHazard, which only an explicit choice should do.
+  const auto = endpoints.filter((e) => canScan(e) && e.kind !== "uart");
+  const ep = id ?? (auto.find((e) => !e.busy) ?? auto[0])?.id;
+  if (!ep) {
+    store.addLog("error", t("No board or relay node is available on the server."));
+    return;
+  }
+  userDisconnected = false;
+  bridgedEp = ep;
+  endpointSelect.value = ep;
+  const info = endpoints.find((e) => e.id === ep);
+  bridgeTransport = new WebSocketTransport(
+    `ws://${location.host}/serial?ep=${encodeURIComponent(ep)}`,
+    info ? endpointName(info) : ep,
+  );
+  void connect(bridgeTransport).then(() => {
+    if (opts.restoreRh !== false && !ep.startsWith("uart:")) void restoreRhIfIdle();
+  });
+}
+
+/**
+ * The host is in scan mode and the page has no stream: take a free board on
+ * its own. RH stays down, exactly as the switch intended; the endpoint list
+ * still lets the user move to another board afterwards.
+ */
+async function resumeScan() {
+  if (app.device) return;
+  await refreshEndpoints();
+  if (endpoints.some(canScan)) connectBridge(undefined, { restoreRh: false });
+}
+
+/**
+ * Scanning a USB board never needs RH's own (UART) board, so a stopped RH
+ * there just means lap timing is down: bring it back. The legacy single-board
+ * setup is the exception — RH and the page want the same tty.
+ */
+async function restoreRhIfIdle() {
+  if (!boardLinkApi || boardLink !== "scan" || !app.device) return;
+  if (bridgedEp.startsWith("uart:")) return; // the bridge owns it: RH comes back when the page leaves
+  if (bridgedEp.startsWith("serial:") && endpoints.filter((e) => e.kind === "serial").length === 1) return;
+  try {
+    const r = await fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "rh" }),
+    });
+    const j = (await r.json().catch(() => ({}))) as { state?: typeof boardLink; error?: string };
+    if (!r.ok) throw new Error(j.error ?? `HTTP ${r.status}`);
+    boardLink = j.state ?? "rh";
+    updateBoardBtn();
+    store.addLog("info", t("RH server started; it takes the radio back on its first byte."));
+  } catch (e) {
+    store.addLog("error", t("Restoring RotorHazard failed ({why})", { why: (e as Error).message }));
+  }
+}
+
+endpointSelect.onchange = async () => {
+  const ep = endpointSelect.value;
+  closeBoardMenu(); // the board button's own list may be open behind the picker
+  if (app.device) await disconnect().catch(() => {}); // one radio per page
+  if (ep) connectBridge(ep);
 };
 // ?sim=s3 simulates the ESP32-S3's scaled 2.4 GHz band instead of the C5's.
 const simTarget = (): SimTarget => (new URLSearchParams(location.search).get("sim") === "s3" ? "s3" : "c5");
@@ -518,14 +882,7 @@ const flashDialog = new FlashDialog({
 });
 document.body.append(flashDialog.el);
 store.subscribe(() => flashDialog.refreshDevice()); // INFO after a (re)connect
-flashBtn.onclick = () => {
-  if (!WebSerialTransport.supported()) {
-    store.addLog("error", "Flashing needs Web Serial (Chrome, Edge or Opera on a computer) or WebUSB (Chrome on Android).");
-    setState("err", "Web Serial unsupported in this browser");
-    return;
-  }
-  flashDialog.open();
-};
+flashBtn.onclick = () => flashDialog.open();
 void flashDialog.offeredVersions().then((vs) => {
   offeredFws = vs;
   updateFirmwareText();

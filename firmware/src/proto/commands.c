@@ -221,6 +221,7 @@ static void set_proto(proto_t p) {
     }
     if (p == PROTO_RH) {
         uint8_t was = next.metrics_mode;
+        next.uart_pace = false; /* RotorHazard owns the hop timing */
         timer_saved_apply(&next, &timer_saved);
         if (next.metrics_mode != was) rh_reset_levels(); /* RSSI and SNR codes don't compare */
         rh_apply_plan(&next); /* the seats may have changed meanwhile */
@@ -394,13 +395,26 @@ static void handle(char *line, link_sink_t sink) {
         reply_printf("PROTOCOL %s\n", proto == PROTO_RH ? "RH" : "MONITOR");
     } else if (!strcmp(line, "PROTOCOL RH") || !strcmp(line, "PROTOCOL MONITOR")) {
         bool monitor = line[9] == 'M';
-        if (monitor && sink == LINK_UART) { reply_text("ERR uart_port\n"); return; }
+        /* MONITOR over the UART is allowed; the link just has to exist
+         * (the S3 has no UART link, and an absent Pi port cannot carry it). */
+        if (monitor && sink == LINK_UART && !link_ready(LINK_UART)) { reply_text("ERR uart_port\n"); return; }
         /* RotorHazard owns the radio while its link is live. */
         if (monitor && esp_timer_get_time() - last_uart_rx < UART_HOLD_US) {
             reply_text("ERR uart_rh\n");
             return;
         }
         set_proto(monitor ? PROTO_MONITOR : PROTO_RH);
+        if (monitor && sink == LINK_UART) {
+            /* Pace the stream to the line rate and clamp spectra so the
+             * largest frame fits link.c's UART buffer. Applies to the config
+             * that is current now, whichever branch set_proto took. */
+            scan_config_t c;
+            scanner_get_config(&c);
+            c.uart_pace = true;
+            if (c.spec_bins > 512) c.spec_bins = 512;
+            scanner_set_config(&c);
+        }
+        link_set_frame_sink(monitor && sink == LINK_UART ? LINK_UART : LINK_USB);
         reply_text("OK\n");
     } else if (!strcmp(line, "ENABLE?")) {
         reply_printf("ENABLE %" PRIu32 "\n", c.enabled);
@@ -495,6 +509,8 @@ static void handle(char *line, link_sink_t sink) {
     } else if (sscanf(line, "SPEC %" SCNu32 " %" SCNu32 " %" SCNu32 " %31s %c", &a, &b, &d, arg2, &extra) == 4 &&
                a <= 255 && b >= 16 && b <= 1024 && (!strcmp(arg2, "MAX") || !strcmp(arg2, "MEAN"))) {
         /* SPEC <every_n_hops (0=off)> <bins> <span_hz one-sided> <MAX|MEAN> */
+        /* The UART frame buffer (link.c) tops out at 512-bin spectra. */
+        if ((sink == LINK_UART || link_frame_sink() == LINK_UART) && b > 512) b = 512;
         c.spec_every = (uint8_t)a;
         c.spec_bins = (uint16_t)b;
         c.spec_span_hz = d;
@@ -671,17 +687,35 @@ static void commands_task(void *arg) {
         }
         for (int i = 0; i < n; i++) {
             uint8_t b = buf[i];
-            /* The Pi is a RotorHazard server: its first byte takes the radio
-             * back from a USB monitor session (and applies the saved RH
-             * settings, as PROTOCOL RH does). */
-            if (sink == LINK_UART && proto != PROTO_RH) set_proto(PROTO_RH);
             if (proto == PROTO_MONITOR) {
                 if (p->probe) { /* more followed: it was just a byte of a line */
                     p->probe = false;
                     line_byte(p, RH_REVISION_CODE, sink);
                 }
-                if (n == 1 && b == RH_REVISION_CODE && !p->used && now - p->last_rx >= PROBE_IDLE_US) p->probe = true;
-                else line_byte(p, b, sink);
+                /* Our host's commands are uppercase-started ASCII lines on
+                 * either port. Any other byte on the UART is RotorHazard
+                 * coming back and takes the radio (and applies the saved RH
+                 * settings, as PROTOCOL RH does). On the UART the two hosts
+                 * are mutually exclusive (a bridge holds the port), so this
+                 * never competes with a monitor session on the same wire. */
+                if (p->text || (b >= 'A' && b <= 'Z')) {
+                    if (!p->text) {
+                        p->text = true;
+                        p->text_start = now;
+                        p->used = 0;
+                        p->overflow = false;
+                    }
+                    if (b == '\n') p->text = false;
+                    line_byte(p, b, sink); /* may switch to monitor mode */
+                } else if (n == 1 && b == RH_REVISION_CODE && !p->used && now - p->last_rx >= PROBE_IDLE_US) {
+                    p->probe = true;
+                } else if (sink == LINK_UART) {
+                    set_proto(PROTO_RH);
+                    rh_rx(sink, b, now);
+                    last_uart_rx = now;
+                } else {
+                    line_byte(p, b, sink);
+                }
             } else if (p->text || (rh_idle(sink) && rh_text_start(b))) {
                 if (!p->text) {
                     p->text = true;
@@ -693,9 +727,9 @@ static void commands_task(void *arg) {
                 line_byte(p, b, sink); /* may switch to monitor mode */
             } else {
                 rh_rx(sink, b, now);
+                if (sink == LINK_UART) last_uart_rx = now;
             }
             p->last_rx = now;
-            if (sink == LINK_UART) last_uart_rx = now;
         }
         xSemaphoreGive(cmd_lock);
     }

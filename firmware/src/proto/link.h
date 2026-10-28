@@ -5,8 +5,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Where replies go. Frames are USB-only: RotorHazard's byte stream has no
- * frame framing, and one stray 0xA5 would desynchronise the server. */
+/* Where replies go. Frames default to USB; link_set_frame_sink() may point
+ * them at the UART, whose byte stream carries them fine (the 0xA5 sync would
+ * only matter if RotorHazard listened on the same port, which it doesn't
+ * while we own it). */
 typedef enum { LINK_USB = 0, LINK_UART, LINK_COUNT } link_sink_t;
 
 void link_init(void);
@@ -33,10 +35,14 @@ bool link_text_to(link_sink_t sink, const char *text);
 bool link_raw_to(link_sink_t sink, const void *data, size_t n);
 bool link_printf_to(link_sink_t sink, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
-/* Frames are only queued while streaming (monitor mode); text and raw bytes
- * always are. Both apply to the USB sink. */
+/* Frames are only sent while streaming (monitor mode); text and raw bytes
+ * always are. Both default to the USB sink. */
 void link_set_streaming(bool on);
 bool link_streaming(void);
+/* Which sink link_frame/link_frame_wait write to. RAWIQ stays on USB
+ * regardless: its chunks exceed the UART's TX ring. */
+void link_set_frame_sink(link_sink_t sink);
+link_sink_t link_frame_sink(void);
 /* Drop everything queued and not yet handed to USB. */
 void link_flush(void);
 

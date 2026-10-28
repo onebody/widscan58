@@ -659,6 +659,24 @@ static bool throttle_until(int64_t due) {
     return slept;
 }
 
+/* Rotation cap that keeps a frame stream on the UART inside the line rate:
+ * the budget divided by the bytes one rotation emits (a metrics/levels frame
+ * per hop, a spectrum every spec_every hops). 0 = unrestricted. */
+#define UART_STREAM_BUDGET 9000 /* B/s, inside 115200 8N1's ~11.5 KB/s */
+static uint32_t uart_stream_cap(const scan_config_t *c, const plan_t *plan) {
+    if (!c->uart_pace) return 0;
+    unsigned maxch = 0;
+    for (unsigned j = 0; j < plan->nhops; j++)
+        if (plan->hop[j].nch > maxch) maxch = plan->hop[j].nch;
+    if (!maxch) return 0;
+    size_t per_hop = c->metrics_mode == METRICS_FULL
+                         ? sizeof(frame_header_t) + 4 + sizeof(frame_metrics_t) + maxch * sizeof(frame_channel_t)
+                         : sizeof(frame_header_t) + 4 + sizeof(frame_levels_t) + maxch * sizeof(frame_level_t);
+    size_t per_rot = (size_t)plan->nhops * per_hop;
+    if (c->spec_every) per_rot += ((size_t)plan->nhops + c->spec_every - 1) / c->spec_every * (32 + c->spec_bins);
+    return UART_STREAM_BUDGET / per_rot;
+}
+
 static void scanner_task(void *arg) {
     (void)arg;
     apply_config();
@@ -692,6 +710,8 @@ static void scanner_task(void *arg) {
             /* Keep to the schedule after a wait, so a late wake-up doesn't
              * lower the rate; a slow rotation starts the next one afresh. */
             uint32_t hz = sp->cfg.max_rotation_hz;
+            uint32_t cap = uart_stream_cap(&sp->cfg, &sp->plan);
+            if (cap && (!hz || hz > cap)) hz = cap;
             int64_t due = sp->rotation_start + (hz ? 1000000 / hz : 0), end = esp_timer_get_time();
             if (hz && end < due) {
                 if (throttle_until(due)) last_yield = due;
