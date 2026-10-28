@@ -1,0 +1,290 @@
+# RF Track 落地实施方案与计划 v1.0
+
+> 编写：2026-10-28。依据：`docs/rf-track/RF_Track_Widscan58_Qoder_Implementation_Plan.md`（总规范，逐阶段验收纪律不变）+ 阶段 0 审计（`docs/architecture/current-state.md`、`feature-inventory.md`、`data-flow.md`、`risk-register.md`）+ 技术栈决策（`docs/architecture/target-stack-landing.md`）+ LLM 增补（`docs/architecture/llm-integration.md`）。
+> 技术栈（用户拍板）：**FastAPI + SQLAlchemy + Pydantic + SQLite(WAL) + Alembic** 后端，**Vue3 CDN 无构建**前端，**配置与事件入库、原始采样只留摘要**。
+> 部署与层级（用户 2026-10-28 追加定调）：**支持多场地，每场地下多台中继（网关）与多个节点；整套系统本地化部署为主，不进行云端部署**（原 F3「Pi→云上行钩子」作废，跨机器只走局域网 WS 与本地归档包）。
+> 标注：**[已由源码确认]** / **[已由本机实测]** / **[已由真机实测]** / **[根据源码推断]** / **[需要实机验证]** / **[当前无法确认]**。
+
+---
+
+## 1. 业务规则与状态机
+
+| 对象 | 状态机 | 触发者 |
+|---|---|---|
+| 场地 Site | `active → archived`（archived 后停止拨号、保留数据、禁止再挂接入机） | 用户在场地管理页操作；**删除只允许 archived 且不静默清数据** |
+| 中继（物理位置）Relay | `active → archived` | 用户管理；archived 位置下的接入机必须先行迁走或停用，**不允许出现"位置没了但还在拨号"** |
+| 接入机 Gateway | `unprobed → dialing → online → unreachable → disabled` | 后端 dialer 拨号（`base_url` 可达性 + `/api/endpoints` 版本协商）；`unreachable` 由连续失败/静默判定，**不得**因为一次超时就把整台机器判死 |
+| 节点 Node | `offline → connecting → online → degraded → lost` | 后端 ingest（WS 连接结果 / 静默超时 / CRC 错误率）**[已由源码确认：serve.mjs 45s 心跳语义可沿用]**；**接入机 `unreachable` 时其下所有节点必须连带转 `lost`，不能各自超时** |
+| 汇聚外场 RemoteSite（仅汇聚实例） | `syncing → fresh → stale → unreachable` | `aggregate.py` 定时拉取；`lag_s > AGGREGATE_STALE_S` → `stale`，**UI 必须置灰并显示最近同步时刻，禁止把上次值当实时值** |
+| 信号事件 SignalEvent | `new → acked → silenced → resolved` | alert-engine 产生；人工 ack/silence |
+| 候选目标 CandidateTarget | `unreviewed → confirmed \| rejected` | 人工复核（算法只能改置信度，不能改复核态）**[规范 §7.3]** |
+| 工作台布局 Layout | `draft → active → archived` | 用户保存/切换；**`is_active` 唯一性按场地成立**（各场地各自的当前布局） |
+| 后台插件 Plugin | `stopped → starting → running → failing → stopped` | 用户在插件管理页启停；supervisor 捕获异常转 `failing` |
+| 板卡归属 BoardLink | `rh ↔ scan`（同一块板二选一） | 页面按钮 → `POST /api/mode`，**不得绕过** **[已由真机实测]** |
+
+层级与配置优先级（2026-10-28 用户两轮定调：**多场地 / 场地内多中继多节点 / 不做云端 / 每场地一套实例 + 局域网只读汇聚**）：
+
+```text
+Site 场地 ──1:N── Relay 中继（物理位置：起点塔/看台/计时区…）
+                       ──1:N── Gateway 接入机（一台跑 serve.mjs 的机器，一个位置可多台）
+                                     ──1:N── Node 节点（一块 C5）──1:N── slot 频道
+生效值优先级：内置默认 < 全局(app_config) < 场地(site) < 布局(layout) < 实例(widget)
+节点全局唯一键：(gateway_id, transport_addr)  ← 不是裸名字；两个场地都可能有 /dev/widscan58-2
+实例角色：instance_role ∈ {site(拨本场地的接入机) | aggregator(只读汇聚，不拨号不透传)}
+```
+
+硬边界（继承规范 §2.3，本方案不放松）：离散频道 RSSI **不得**渲染为连续频谱；无真实频率轴帧时只显示「频道活动热图」；LLM/算法推导内容必须带 `producer` 与「AI 推导」徽标，物理隔离于观测时间线；模拟源必须带 `source='mock'|'demo'`。
+
+---
+
+## 2. 目标拓扑与已核实的环境事实
+
+```text
+【场地实例：每个场地一套后端 + 一个 SQLite；下面就是场地 A 的那一套】
+        ┌──────────── 接入机 G1 = Pi4b 203.0.113.183（位置 R1 起点塔）────────────┐
+ C5 ×N ─┤ /dev/ttyAMA0 ← RotorHazard 4.5 (8 节点)   ← C5 #1 (UART GP11/12)        │
+        │ /dev/widscan58-<SN> → web/serve.mjs :8080 ← C5 #2..N (USB，已实测)      │
+        │ ws://…:8080/node?id=<name>                ← S3 桥/远程节点（F2，后置）   │
+        └──────────────┬──────────────────────────────────────────────────────────┘
+        ┌─ 接入机 G2（同位置 R1 的第二台机器）┐  ┌─ 接入机 G3（位置 R2 看台）┐
+        │ /dev/widscan58-* → serve.mjs :8080  │  │ …                        │   ← 同一套 serve.mjs，零改动
+        └──────────────┬──────────────────────┘  └──────┬───────────────────┘
+                       │ 每端点一条 WS 客户端（serve.mjs 单客户端语义）
+   ┌───────────────────▼──────────────────────────────────────────────────────────────┐
+   │ rftrack FastAPI  instance_role='site'  (:9000, uvicorn 单 worker, 只听局域网)     │
+   │  dialer(只拨本场地 relay/gateway) → ingest(每端点单写者锁) → store(环形,键=(gw,addr,slot))│
+   │  有界队列(每接入机一条) → anomaly / interference / alert 插件 → SQLite(site_id 贯穿)│
+   │  REST /api/*  ·  WS /ws/live  ·  WS /ws/bridge/{ep}(透传，一条连接只属一个接入机)  │
+   │  只读出口 GET /api/aggregate/summary|events（供汇聚实例拉，不含原始字节/写能力）    │
+   └───────┬──────────────────────────────────────────────────────────────────────────┘
+           │
+   Vue3 工作台（状态栏常驻 场地 A · R1 起点塔 · G1 · widscan58-2）      原 web/ SPA（零改动，改指 ?bridge=ws://…:9000）
+
+【汇聚实例：同一份代码，另一台本地机器，只读】
+   rftrack aggregator (instance_role='aggregator')
+     定时 GET 各场地实例 /api/aggregate/*（只读 token）→ site(origin='aggregated', last_sync_at, lag_s)
+     不提供 /ws/bridge、不建 dialer 任务、拒绝一切写；**UI 常驻「滞后 X 秒」，超阈值置灰为「陈旧」**
+```
+
+**部署边界（2026-10-28 用户两轮定调，覆盖原 F3 设想）**：本地化部署为主，**不进行云端部署**。跨机器只有三条通道——场地内局域网 WS（实时）、汇聚实例的只读拉取（近似、滞后）、`GET /api/export/site/{id}` 归档 ZIP 在另一台机器导入（完整搬家）。层级定为 **场地 → 中继（物理位置）→ 接入机（一台跑 serve.mjs 的机器，一个位置可多台）→ 节点**：用户明确"场地下面既有多个物理位置，也可能有多台同位置机器"，所以位置与机器不能合并成一张表。
+
+**环境事实（本轮实测）**
+
+- Pi：Python **3.13.5**、pip 25.1.1、node 20.19.2、SQLite 3.46.1、内存 905 MB（约 460 MB 可用）、`widscan58-web` 与 `rotorhazard` 均 active。**[已由真机实测]**
+- Mac：Python 3.14.5 + FastAPI 0.133.1 / SQLAlchemy 2.0.47 / Alembic 1.18.4 / Pydantic 2.12.5 / uvicorn / httpx / pytest / pyserial / websockets 齐备。**[已由本机实测]**（注意 pioarduino 拒 3.14，固件与后端两条链路不得共用解释器）
+- 双 C5 USB 板并跑实测：单端点 ~36–37 KB/s、60 圈/s、CRC 错误 0，RH 同时保持 8 节点；第二客户端连同一端点被 4096 拒绝。**[已由真机实测]**
+- UART 上的板子**不能扫频**（`commands.c` 对 UART 回 `ERR uart_port`）→ 拓扑唯一可行解：RH 用 UART 板，扫频用 USB 板。**[已由真机实测]**
+- Pi 数据落在 SD 卡 → 高频写会磨损，故 `sample_summary` 桶粒度 ≥1 s、批量事务、WAL，并保留「只内存不落库」开关。**[根据源码推断]**
+
+**接入层的复用决定（本方案的关键修正）**：后端不自建串口层，而是 `serve.mjs` 的下游消费者。理由：`serve.mjs:101,102,177,244,292,494-499` 的端点枚举、busy/replaced、掉线心跳、`/node?id=` 中继、`/api/mode` 停启 RH 均已在真板闭环验证；Python 重写等于把这些坑重踩一遍，且违背规范 §2.1「保护原有功能、增量扩展」。**[已由源码确认]**
+
+---
+
+## 3. 数据模型（Alembic 增量，严禁重置库）
+
+表清单与字段见 `target-stack-landing.md` §5。多场地定案后对表结构的改动是：**新增 `relay`（物理位置）与 `gateway`（接入机）两级**、`site` 从"预留"升为一等实体、`workbench_layout.site_id` 由可空改必填、`signal_event`/`sample_summary` 增冗余 `site_id`；汇聚形态另加 `app_config.instance_role` 与 `site.origin/last_sync_at/lag_s`。本节只补落地纪律：
+
+| 迁移 | 内容 | 判据 |
+|---|---|---|
+| `001_baseline` | `app_config` + **`site`** + **`relay`** + **`gateway`** + `node` + `channel_plan(_item)` | 空库可建、重复执行幂等；`node` 的唯一键是 `(gateway_id, transport_addr)`；`gateway.relay_id`、`relay.site_id` 外键与级联限制生效；**首版就建三级层级，不留"后补场地列"的迁移债**（`rftrack/` 尚未创建，此刻改模零代价） |
+| `002_layout` | `workbench_layout`(**site_id 必填**, relay_id?) + `layout_widget` | 实例 id 唯一约束生效；**`is_active` 唯一索引是 `(site_id)` 部分唯一**——A 场地切布局不得影响 B 场地的当前布局 |
+| `003_events` | `signal_event` + `sample_summary`（`(node_id,slot,ts_bucket)` 唯一 + `(site_id,node_id,slot,ts_bucket)` 查询索引） | 10 万行批量写 < 2 s（Pi 实测）**[需要实机验证]**；按 `site_id` 过滤不得走全表扫 |
+| `004_plugins` | `plugin_registry` + `plugin_state` + `plugin_log` | dropped_count 可写；规则/插件的 `scope` 能锁到场地或位置 |
+| `005_targets` | `alert_rule` + `alert` + `candidate_target` + `track_observation` | 复核字段与算法字段分列；`alert_rule.scope ∈ {global,site,relay,gateway,node}` |
+| `006_import` | `local_settings_import` | 导入可回滚（保留原 payload） |
+| `007_aggregate` | `app_config.instance_role` + `site.origin/last_sync_at/lag_s` | **汇聚是独立一支迁移**：场地实例升上来后 `instance_role='site'`，字段全空即"本场地数据"；新增列全部可空，符合"新增列一律可空"纪律 |
+
+保留策略（`config.py` 全部可 env 覆盖，默认值即落地值）：`RETENTION_EVENTS_DAYS=7`、`RETENTION_SUMMARY_DAYS=30`、`RETENTION_LOG_ROWS=5000`、`SUMMARY_BUCKET_S=1`、`RAWIQ_PERSIST=false`。时间统一 aware UTC。**[规范 §2.4]**
+
+**多场地带来的三项新增强制项**（原设计里没有，现在必须有，否则"多场地"只是界面上多个名字）：
+
+1. **按场地覆写保留**：`site.retention_events_days/summary_days` 为空则继承全局——SD 磨损与库体积按场地分级，大场地可以只留 3 天摘要。**[根据 R11 推断]**
+2. **按场地清理**：retention 任务必须逐场地跑，并把 `site_id`/删除行数打进结构化日志（**不为此新开表**），不能一条 `DELETE WHERE ts<…` 把两个场地的数据一起删。
+3. **场地归档**：`GET /api/export/site/{id}` 用 `sqlite3.Connection.backup()` 出完整库再按 `site_id` 过滤打包（禁止 `VACUUM INTO` 后手工裁剪），导入侧校验清单与 `schema_version`。
+
+---
+
+## 4. API 契约
+
+前缀 `/api/*`，健康检查 `/api/health`，端口基线 9xxx（后端 9000，各场地网关的 serve.mjs 保持 8080 不动）。
+
+| 端点 | 说明 | 关键校验 |
+|---|---|---|
+| `GET/POST/PATCH/DELETE /api/sites[/{id}]` | 场地 CRUD | 删除仅允许 `archived` 且无在线接入机→否则 409；**删场地不清数据**（要清走归档导出后人工） |
+| `GET/POST/PATCH/DELETE /api/relays[/{id}]` | 中继（物理位置）CRUD，挂 `site` 下 | 位置 `archived` 前必须先迁走/停用其下接入机，**不允许"位置没了但还在拨号"** |
+| `GET/POST/PATCH/DELETE /api/gateways[/{id}]` | 接入机 CRUD，挂 `relay` 下（`name`+`kind`+`base_url`+`serial_prefix`） | `base_url` 必须是局域网地址；**拒绝任何公网/云地址**（本地化部署定调） |
+| `POST /api/gateways/{id}/probe` | 连通性**实测**：拨 `base_url`、取 `/api/endpoints`、报真实延迟与失败原因 | 不得只回"已保存"；失败原因要分「DNS/拒绝/超时/版本不符/端点为空」 |
+| `GET/POST/DELETE /api/aggregate/remotes` `POST /api/aggregate/sync` `GET /api/aggregate/status` | **仅汇聚实例**：登记远端场地、手动触发、看 `last_sync_at/lag_s/失败原因` | 同步失败必须显式呈现，不得静默沿用上次数值冒充新鲜 |
+| `GET /api/aggregate/summary\|events` | **仅场地实例**：对外只读出口（供汇聚拉），只给摘要与事件 | 只读 token 鉴权；**不含原始字节、不含写能力、不含 `/ws/bridge` 升级路径** |
+| `GET/PUT /api/settings/global` | 实例级全局设置，`version` 乐观并发 | 422 逐字段错误；409 版本冲突 |
+| `GET/PUT /api/settings/site/{id}` | 场地级设置（保留天数/时区/告警默认值） | 返回**生效值 + 来源链**（默认<全局<场地） |
+| `GET/POST/PATCH/DELETE /api/layouts[/{id}]` | 保存/切换/重命名/删除（均在 `?site=` 内） | 版本不兼容→降级并返回原因，不 500 |
+| `POST /api/layouts/{id}/clone` `POST …/activate` | 另存为 / 切换 | `is_active` 唯一**按场地**成立 |
+| `PUT /api/layouts/{id}/widgets/{instance_id}` | 实例局部配置 | 返回**生效值 + 来源链**（默认<全局<场地<布局<实例） |
+| `GET /api/plugins` `POST /api/plugins/{id}/enable\|disable` `GET …/state\|logs` | 启停幂等、状态与日志 | 停用的插件队列必须排空且不丢计数；`scope` 能限定到单场地 |
+| `GET /api/nodes?site=&gateway=` `PUT /api/nodes/{id}` | 节点/能力（capabilities 显式声明） | 缺能力字段→`unsupported`，不得补造；**节点身份键 `(gateway_id, transport_addr)`，禁止按显示名全局去重** |
+| `GET /api/endpoints?gateway=` `POST /api/board/mode` | 代理**指定网关**的 serve.mjs 端点表与 RH/scan 切换 | 只转发不改语义 **[已由真机实测]**；多网关后必须带 `gateway` 参数，否则不知道该切哪台 |
+| `GET /api/events[/{id}]` `GET /api/targets[/{id}]` `POST /api/targets/{id}/review` | 事件流 / 候选目标 / 人工复核 | 详情必须返回证据链与局限说明；`?site=` 缺省=当前场地，**不默认跨场地全表扫** |
+| `GET /api/alerts?site=` `POST /api/alerts/{id}/ack\|silence\|resolve` `/api/alert-rules` CRUD | 告警闭环 | 去重键唯一；规则必须能锁到场地，A 场地阈值不得惊动 B 场地 |
+| `GET /api/samples/summary?site&node&slot&from&to&bucket` | 趋势图取数 | 桶粒度参数有白名单，禁止任意全表扫 |
+| `GET /api/export/site/{id}` · `POST /api/import/site-package` | **本地归档**（ZIP：库快照+配置+清单）——跨机器/跨场地的唯一数据流动通道，取代任何云上传 | 导入前校验 `schema_version`；`backup()` 取快照，禁止热库直接 copy |
+| `WS /ws/live?site=` | 当前值 + 事件推送 | 客户端断开必须清理订阅（无泄漏）；**订阅必须按场地隔离，A 场地推送不得混入 B 场地事件** |
+| `WS /ws/bridge/{ep}` | **字节透传**，让原 SPA 经后端连板 | 只读扇出 + 写命令单写者锁；**一条连接只属一个 gateway** |
+
+---
+
+## 5. 后端业务逻辑分层（router 薄 / service 厚）
+
+```text
+rftrack/backend/app/
+├── config.py        DB_PATH/BIND/PORT、QUEUE_LIMIT、RETENTION_*、SUMMARY_BUCKET_S、BRIDGE_BASE_URL(ws://pi:8080)
+│                    新增：INSTANCE_ROLE(site|aggregator)、MAX_GATEWAYS、MAX_NODES_PER_GATEWAY、DIAL_CONCURRENCY、
+│                    AGGREGATE_INTERVAL_S、AGGREGATE_STALE_S、AGGREGATE_READ_TOKEN
+├── database.py      engine(WAL)+SessionLocal+Base
+├── models.py        单文件（技能基线）：Site / Relay / Gateway / Node / …
+├── schemas.py       Pydantic：全部配置 Schema、Layout v1、事件/目标出参、Site/Relay/Gateway
+├── deps.py          get_db、require_read_token（汇聚出口与 /api/aggregate/* 用；比 RBAC 轻得多）
+├── routers/         settings.py layouts.py plugins.py nodes.py events.py targets.py alerts.py samples.py bridge.py ws.py
+│                    新增 sites.py relays.py gateways.py archive.py aggregate.py
+└── services/
+    ├── frame_parser.py    0xA5'R' + CRC32 + 失步重同步（镜像 web/src/proto/frames.ts）
+    ├── dialer.py          **只拨本场地的 relay→gateway**（配置里出现远端场地地址直接报错，不静默接受）；
+    │                      建 WS → 枚举端点 → 交给 ingest；退避重连、`unreachable` 判定、其下节点连带转 lost
+    ├── ingest.py          端点订阅 + 重连退避 + 静默判路 + 单写者锁（键=(gateway_id, transport_addr)）
+    ├── store.py           内存环形缓冲（每节点每 slot 上限点数；总点数受 MAX_GATEWAYS×MAX_NODES 约束）
+    ├── retention.py       桶聚合批量写；按场地覆写保留天数；逐场地清理并打结构化日志
+    ├── config_layer.py    优先级生效值计算 + 来源标注（默认<全局<场地<布局<实例）
+    ├── registry.py        内置插件注册表（无动态代码加载）
+    ├── archive.py         场地归档导出/导入（backup() + 清单校验 + schema_version）
+    ├── aggregate.py       **仅 aggregator 角色**：定时 GET 远端 /api/aggregate/*，写 site(origin='aggregated',
+    │                      last_sync_at, lag_s)；失败保留旧数据但标记 stale，绝不"沿用即新鲜"
+    └── plugins/{anomaly_detector,interference_correlator,alert_engine}.py
+```
+
+- 队列：`asyncio.Queue(maxsize=QUEUE_LIMIT)`，满载丢最旧并 `dropped_count++`，禁止阻塞 ingest 读循环。**[规范 §2.4/§6.5]**
+- **多接入机的队列形态必须定死**：采用「每 gateway 一条有界队列 + 一个共享消费池」，而不是每节点一条。理由：`serve.mjs` 端点已经是单客户端，每台接入机的字节速率有上限（实测 ~37 KiB/s/板），按接入机排队能天然隔离"起点塔打满不影响看台"；按节点排队则队列数随节点数线性、且每队列都得重复一次帧解析。**[根据真机带宽实测推断，队列数上限仍需压测确认]**
+- **总并发上有硬闸**：`DIAL_CONCURRENCY` 限制同时拨号的接入机数，`MAX_NODES_PER_GATEWAY` 限制单机订阅端点数；超限返回明确 429/409 文案，不得静默丢弃新接入机（否则用户会以为"加了机器怎么没数据"）。默认值待 S9 在 Pi 上压测定 **[需要实机验证]**。
+- **角色约束要写成断言而不是约定**：`instance_role='aggregator'` 时，启动即拒绝创建 dialer 任务、路由表里摘掉 `/ws/bridge`、所有写端点返回 405。**[根据"汇聚数据可能被误当实时"的风险设计]**
+- 插件异常：supervisor `try/except` 捕获 → `plugin_state.status='failing'` + 退避重启（上限 3 次），采集链路不受影响。**[规范 §10.4]**
+- 布局保存/切换**不触碰** ingest 与插件生命周期；**切位置/切接入机同样不触碰**（只换视图与订阅，后台拨号与插件继续跑）。**[规范 §10.4]**
+- 帧解析必须过 §9 的对拍测试才允许接线（三份协议镜像的唯一防漂移手段）。
+
+---
+
+## 6. 前端工作台（Vue3 CDN 无构建）
+
+```text
+rftrack/frontend/workbench/
+├── index.html            相对路径 ./，CDN 用国内镜像 + 回退，?v=YYYYMMDD
+├── app.js                根实例：**场地上下文** / 工具栏 / 组件库 / 栅格 / 属性面板 状态编排
+├── api.js                运行时探测子路径前缀，不硬编码；所有请求带当前 site 上下文
+├── context.js            **位置/接入机选择器 + 当前场地上下文 + 跨场地不得串数据**
+├── grid.js               自研 12 列栅格 + pointer 拖拽/缩放（不引第三方网格库）
+├── chart.js              手绘 canvas（沿用 web/src/util/canvas.ts 的 8 色分类板与度量画法）
+├── components/*.js       site-tree(场地→位置→接入机→节点) · channel-matrix · channel-detail · rssi-trend ·
+│                         signal-events · channel-activity-heatmap · target-inspector · node-status
+└── styles.css            CSS 变量主题（与 app_config.theme 同步）
+```
+
+- **当前对象必须写在状态栏**：状态栏常驻 `场地 A · R1 起点塔 · G1 · widscan58-2 · online`，不能只靠 URL 参数、下拉选中项或悬浮提示——四级层级之后"我现在看的是哪块板"是最容易出错事的歧义点。**[用户既往明确偏好]**
+- **汇聚实例的滞后必须显式**：`origin='aggregated'` 的场地在页面常驻「滞后 X 秒 · 最近同步 HH:MM」，`lag_s` 超阈值整块置灰为「陈旧」，**不得把上次同步值画成实时曲线**。**[规范 §2.3 在汇聚场景的延伸]**
+- 位置/接入机选择器在**顶部工具栏**（不是设置页里）；切换只换视图与订阅，**不重启后台拨号与插件**。
+- DEMO 标识：模拟源数据必须走 `source='mock'|'demo'` 字段并在 UI 角标显示。**[规范 §2.3]**
+- 实例语义：`instance_id` 唯一、同类可多实例、销毁必须 `unsubscribe` + 清定时器。**[规范 §3.3/§10.1]**
+- 与原 SPA 共存：工作台顶部保留原页面入口链接（`?bridge=ws://…:9000/ws/bridge/{ep}` 或 Mac 本机 Web Serial），原页面在验收前不移除。**[规范 §2.1]**
+- **没有任何云相关入口**：不做登录云账号、不做"同步到服务器"、不做远程分享链接；需要跨机器就给"导出场地归档包"按钮（指向 `GET /api/export/site/{id}`）。**[用户决定]**
+- 移动端适配（S6 之后）：≤640px 卡片化、底部 Tab、按钮 ≥44px、输入字号 ≥16px。**[技能基线]**
+
+---
+
+## 7. 阶段计划（每阶段做完即停，等用户确认）
+
+| 阶段 | 目标 | 新增 | 改动（原代码） | 出口判据 | 回滚 |
+|---|---|---|---|---|---|
+| **S0** 前置清障（0.5 天） | 工作区洁净 + 基线入库 | — | 当前工作区**未提交 15 个文件**（2026-10-28 实测 +1234/−31），且**已不再是纯 web 改动**：`web/` 侧 `serve.mjs`+447、`main.ts`+371、`package-lock.json`+276、`i18n.ts`+33、`model/app.ts`+7、`styles.css`+6、`serial/device.ts`+3、`package.json`+1（真板已验证的网关能力，不能悬空）；**另有 `firmware/` 侧 5 个文件 +72**（`link.c`+33、`scanner.c`+20、`commands.c`+17、`link.h`+10、`scanner.h`+3）——这是并行会话正在实现的**固件 F1**，见 [`topology-and-access-methods.md` §1/§3.3](topology-and-access-methods.md)。**两批必须分开提交，不能捆成一个**：web 那批属 S0 基线入库，固件那批属 F1、未提交前不得当作已验收、且按"替代硬件类特性单独切分支"的既有规矩走自己的分支。 | `git status` 干净；四套基线复跑全绿；**S0 提交里不含 `firmware/` 改动** | 该提交可单独 revert |
+| **S1** 产品开发线（0.5 天） | `develop/rf-monitor-platform` + tag `rf-track-baseline-v0.1.0` | — | 无 | 分支拓扑与远程确认（origin=上游只读、fork=onebody） | 删分支即可 |
+| **S2** 后端骨架（2–2.5 天） | FastAPI 分层 + `site`/**`relay`**/`gateway`/`node` 建模 + Alembic `001` + `migrate.py` + `/api/health`（含各接入机拨号态） | `rftrack/backend/**`, `requirements.txt` | 无 | `pytest` 绿（TestClient）；**场地/位置/接入机三级 CRUD + `probe` 的失败分支可测**；`instance_role` 缺失时默认 `site` 且不报错；**严禁重置库** 的迁移三场景在空库/有数据无版本/正常 upgrade 各验一次 | 删 `rftrack/` |
+| **S3** 接入层打通（2–3 天） | `dialer.py`（每接入机一路，**只拨本场地**）+ frame_parser + ingest + `/ws/bridge/{ep}` + `/api/endpoints?gateway=` 代理；**顺带做 Z0**：给一只 USB-UART 适配器起 `widscan58-*` udev 别名，验证它进端点表 | `services/{dialer,frame_parser,ingest,store}.py`, `tests/test_frame_parity.py`, `tests/test_multi_gateway.py` | 无（原 SPA 仅改 `?bridge=` 目标 URL，运行时参数不是代码改动） | **对拍测试**：Python 解析结果 == TS golden JSON 逐字段相等；单节点数值与 M0 基线一致；**多接入机（≥2 台假网关）并跑：节点身份键不撞名、A 掉线不影响 B、同名 `/dev/widscan58-2` 在两个位置下是两个节点**；Z0 只需证明"端点可见 + 单客户端 4096 + 心跳清理"与 USB 板一致（**不代表 UART 扫频可用，那要等 F1**）；断线/热拔插标记为真机待验 | 关掉后端，SPA 直连 8080 即恢复原状 |
+| **S4** 设置系统（2–3 天） | `app_config`/**场地级**/布局/实例四级 + `config_layer` + localStorage 一次性导入 | `routers/{settings,sites,layouts}.py`, `models`, `002/006` 迁移, `tests/test_settings_isolation.py`, `tests/test_site_isolation.py` | 无 | 规范 §4.4 十条全部 pytest 化通过（A 阈值不影响 B、同型两实例不同配置、非法配置不崩、局部不绕过硬件约束…）**+ 新增两条：A 场地的设置与保留不得影响 B 场地；场地级覆写为空时正确继承全局并回显来源链** | Alembic downgrade 一步 + `local_settings_import` 留痕可回退 |
+| **S5** 工作台壳 + 5 个 DEMO 组件（3–4 天） | 栅格 + 组件库 + 属性面板 + **场地/网关选择器与 `site-gateway-tree`** + 矩阵/详情/趋势/事件流 | `rftrack/frontend/workbench/**` | 无 | 规范 §10.1 交互清单：增删/拖缩/复制/保存/另存为/重命名/切换/刷新恢复/坏布局降级不崩；资源清理有断言；**切场地后各场地保留自己的当前布局，状态栏显示当前场地/网关/板** | 独立目录，删除即回滚 |
+| **S6** 真实数据组件（2–3 天） | 组件接 `/ws/live?site=`，无数据/过期/断线/unsupported 状态 | `components/{channel-matrix,…}.js` 接线, `routers/samples.py`, `003` 迁移 | 无 | 用真机录制回放做数据源；MOCK 与真实可区分；历史有容量边界；**A 场地的 `/ws/live` 订阅收不到 B 场地的事件（pytest + 双场地夹具）** | 同上 |
+| **S7** 插件运行时（3–5 天） | 有界队列（**每网关一条**）+ supervisor + `anomaly-detector`/`interference-correlator`/`alert-engine` 第一版 + **规则作用域可锁到场地** | `services/{registry,plugins/*}.py`, `004/005` 迁移 | 无 | 规范 §10.4：插件启停/状态/日志可观测、队列有界、插件崩溃不拖垮采集、切布局不停任务（pytest 断言）；**切场地也不停任务**；A 场地队列打满不得吃掉 B 场地配额 | 全部 `enabled=0` 即等效不存在 |
+| **S8** 探索与目标（1–2 周） | 选择联动 + `target-inspector` + 候选目标/复核 + 频道活动热图 | `routers/{events,targets,alerts}.py`, components | 无 | 规范 §10.5：结果含来源/证据/不确定性；不生成无来源坐标；复核与推测分列 | 同上 |
+| **S9** 稳定性与部署（1–2 周） | 本地部署（Docker 或 venv+systemd）+ 多场地/多网关/多组件/长跑压测（**按现有 8 频道；40+ 频道属固件 M3，不在本阶段**）+ **`MAX_GATEWAYS`/`DIAL_CONCURRENCY` 定值** + 归档导出/导入往返实测 + SD 磨损评估 + 文档交付 | `Dockerfile`/`docker-entrypoint.sh`/compose（9xxx、数据卷永不删） | 无 | 真实 CPU/内存/延迟/队列/dropped/CRC 数字在案；禁编造；未测项如实标注；**归档包在另一台机器导入后事件与配置可读回（往返测试）**；**代码与文档里 grep 不到任何云上传端点** | 回滚 = 停服务 + 保留数据卷 |
+| （可选）S10 LLM 旁路 | 见 `docs/architecture/llm-integration.md`（方式 A 网关先行，不进关键路径；**provider 默认本地 ollama/vLLM**） | `services/llm_gateway.py` 等 | 无 | 断网/禁用时 S1–S9 全部照常；**选云端 provider 时页面必须常驻"数据发往 `<base_url>`"提示且脱敏不可关** | 关闭 `llm.enabled` |
+| **S11 局域网只读汇聚（2–3 天，用户 2026-10-28 定案的形态）** | 同一份代码第二个角色：`aggregator` 定时拉各场地实例的 `/api/aggregate/*` → 本站只读库 + 滞后徽标 + 陈旧置灰；场地实例侧补上只读出口与 `require_read_token` | `services/aggregate.py`, `routers/aggregate.py`, `007_aggregate` 迁移, `tests/test_aggregate_staleness.py` | 无（新增只读端点，不改既有端点语义） | 拔掉头某个场地的网线 → 该场地在汇聚视图里转 `stale` 并显示最近同步时刻，**其余场地不受影响**；`lag_s` 阈值可配；aggregator 角色下 `POST`/`/ws/bridge` 一律 405（pytest 断言）；**不得把陈旧值画成实时曲线** | 停用汇聚实例即回到"每场地各看各的"，场地实例零影响 |
+
+> **M3（40+ 频道）与本计划的关系**：频道数扩展是**固件分支**工作（`PROFILE_MAX_CHANNELS 8→N` + ENABLE u32 掩码改位集，见 `docs/rf-track/channel-limit-audit.md`；静态 RAM 红线须实机链接验证 **[需要实机验证]**）。本计划 S1–S9 全部在**不改固件**前提下把软件侧做完，S9 压测按现有 8 频道/多节点做；40+ 频道另立固件阶段，验收前工作台必须显示 `unsupported` 而不是假装能跑。**[规范 §2.3]**
+
+> **三种硬件接入方式与本计划的关系**（详见 `docs/architecture/topology-and-access-methods.md`；2026-10-28 用户已就②③拍板）：
+> ①**USB × N → Pi** 是唯一今天就能跑的路线，S1–S9 全部按它验收（双板并跑已实测，~37 KiB/s/板、0 CRC 错）。
+> ②**C5 UART → Pi**：**本会话定的是"Pi 侧走 USB-UART 适配器，不碰板载 PL011/miniuart"**（好处是 RH 的 `ttyAMA0` 不用腾、接入层零分叉）——**但同日另一路会话没按这条走，它实现了 PL011 直连**，所以这条决定目前是**待裁定的选项之一**，不是既成事实（见本段末尾与 [`topology-and-access-methods.md` §3.4](topology-and-access-methods.md)）；但**基线上固件一行都省不掉**：帧只从 USB 出（`link.c:110`/`link.h:20-23`）、UART 上拒 `PROTOCOL MONITOR`（`commands.c:397`）、UART 收字节即强制 RH（`:677`）——**所以它必需固件阶段 F1**（**2026-10-28 复核更新：工作区里已有一段未提交、未实测的 F1 实现**，`link_set_frame_sink()` + `uart_pace`，见 [`topology-and-access-methods.md` §1 时效声明与 §3.3](topology-and-access-methods.md)；它把"固件障碍一个都没少"改写成"障碍已被代码解掉，但没提交、没吞吐实测、还改了 UART 上 `PROTOCOL MONITOR` 的既有对外语义"。**S1–S9 不因此改判、也不按②验收**）。②的完整配套 = **F1 固件改造（必需）**+ Pi 侧接入形态二选一，**这一条目前未裁定**：②b「USB-UART 适配器 + 一条 `widscan58-*` udev 别名」（本会话的决定，工作区未实现）与 ②a「PL011 `ttyAMA0` 直连 + 桥接时停/复 RotorHazard」（**同日另一路会话已实现并部署到 Pi**：`serve.mjs:41,219-225,486-504`，`kind:"uart"` 端点、`--rh-stop-cmd`、等 2.5 s 覆盖固件 2 s `UART_HOLD`）。两者取舍：②a 省硬件但**每次扫频都停 RH**（与计圈互斥）、且 PL011 只有一路⇒单块 UART 板；②b 与 RH 并存、可多块并列，代价是适配器 + 按物理口的 udev 别名（未实测）。详见 [`topology-and-access-methods.md` §3.4](topology-and-access-methods.md)。
+> ③**GPIO 中继（S3/另一块 C5）无线上行**：本仓库**没有中继固件**（无 websocket/HTTP/TLS 客户端，S3 连 UART link 都是空实现），Pi 侧接收端 `/node?id=` 已就绪并实测过。**排期决定：S 阶段优先，F2 后置**。原「节点直连云 / F3=Pi→云上行钩子」**已于 2026-10-28 整体作废**：用户定"整套系统本地化部署为主，不进行云端部署"，跨机器只保留局域网 WS 与场地归档包导出/导入。
+> 软件侧把三者收敛成同一个 `AccessSource.kind` 抽象（`bridge-ws`（含 `usb-native` / `uart-adapter` 两种 medium）/`node-ws`/`local-serial`；**`cloud-relay` 因"不做云"而删除**；~~`uart-direct`~~ 曾按②的决定删除，**但工作区的 `uart:` 端点已把它实现出来了，故恢复为一种形态**，见上），**每个接入源必须带 `site_id` + `relay_id` + `gateway_id`**（后两者经 `gateway → relay → site` 推导，节点上不存 `site_id`），**节点能力由声明渲染，未声明即 `unsupported`**；②a 形态还要额外声明一个能力位：**"接入这个端点会停掉 RotorHazard 计时"**（`scannable`/`stops_rh`），这是运营者必须先看到的信息，不能藏在实现里。**[规范 §2.3]**
+
+
+---
+
+## 8. 测试与验收矩阵
+
+| 层 | 命令 | 门槛 | 当前状态 |
+|---|---|---|---|
+| 原 Web 单测 | `cd web && npm test` | 56/56 不退步 | **[已由本机实测]**（M0，tag `rftrack-m0`） |
+| 原 Web 类型 | `npx tsc --noEmit` | 0 错误 | **[已由本机实测]** |
+| 原 Web e2e | `node e2e/headless.mjs --sim` | 28/28 不退步 | **[已由本机实测]** |
+| 固件宿主测试 | `pio test -e native` | 17/17 不退步 | **[已由本机实测]** |
+| 后端 | `pytest rftrack/backend/tests`（TestClient 全绿即门槛，不起临时 dev server） | 每功能覆盖正常/403·409/重复·400/边界 | S2 起建 |
+| **场地隔离** | `tests/test_site_isolation.py`（双场地 + 每场地多位置多接入机夹具） | 设置/布局/事件/告警/保留/WS 订阅**六处**都验证"A 不影响 B"；同名端点在不同位置/不同接入机下不撞身份 | S3 起建（多场地的核心防线，不能只靠代码 review） |
+| **汇聚陈旧度** | `tests/test_aggregate_staleness.py` | 远端不可达时必须显式 `stale` + 显示 `last_sync_at`，**断言聚合视图里没有"看起来像实时"的路径**；aggregator 角色写端点 405 | 待 S11 |
+| 帧对拍 | `tests/test_frame_parity.py` + TS 侧导出的 golden JSON | 逐字段相等；**无 golden 文件时标 skip，不得假绿** | 待 S3 |
+| 归档往返 | `tests/test_archive_roundtrip.py`（导出→在临时库导入→比对） | 事件数/配置/布局逐字段一致；坏 `schema_version` 必须拒绝而不是半导入 | 待 S9 |
+| 真机 | Mac 单板 / Pi 双板（`serial_bridge.py` 或 serve.mjs） | 录制 60 s 基线 + 逐帧 diff + 断线热拔插 | **未执行**，原 M0-3 遗留项，S0/S3 补做 |
+| 性能 | 多网关×多节点/长跑/事件增长；40+ 频道属固件 M3 就绪后再测 | 记录真实数字与丢弃率，并给出 `MAX_GATEWAYS`/`DIAL_CONCURRENCY` 的依据 | 未执行 |
+
+阶段报告一律沿用规范 §11 的 11 项模板，并区分：已通过软件测试 / 已通过真机测试 / 仅模拟 / 未执行 / 无法验证 / 当前不支持。
+
+---
+
+## 9. 新增风险（补 `docs/architecture/risk-register.md` R1–R10 之外）
+
+- **R11 SD 卡写磨损**（中，**多场地后升级为高**）：Pi SD 卡承载 SQLite；对策 = 桶≥1 s + 批量事务 + `RAWIQ_PERSIST=false` + `SUMMARY_BUCKET_S` 可调 + **按场地覆写保留** + S9 实测写入量。写放大随"场地×网关×节点"线性，而卡只有这一张。**[根据源码推断]**
+- **R12 双网关功能重叠漂移**（中）：serve.mjs 与 FastAPI 都能「看端点」，语义必须只有一份；对策 = 后端只做代理与下游，不复制端点逻辑，`/api/endpoints?gateway=` 直通对应网关的 serve.mjs。**[已由源码确认]**
+- **R13 未提交的已验证改动**（高，S0 即消解）：**1234 行 / 15 文件**（`git diff --numstat` 实测，2026-10-28 两次复核从 977 → 1096 → 1234，同一目录的并行会话仍在加），其中**已包含 5 个固件文件 +72 行**——这意味着悬空的不只是"Pi 上跑着没入库的网关能力"，还有**一段未实测、且改动了既有对外语义（UART 上 `PROTOCOL MONITOR`）的固件改造**。任何分支/基线操作都可能与之冲突；对策见 S0 行"两批分开提交"。**[已由真机实测 + git diff --numstat]**
+- **R14 单 worker 约束**（低→中）：多 uvicorn worker 会重复订阅端点导致 busy 抢占；对策 = 启动时断言 workers==1。多网关让这个约束更难绕开（拨号器是单进程内的 asyncio 任务树）。**[根据源码推断]**
+- **R15 容量边界（定案后范围收窄）**：单实例不再承载全部场地，风险降级为"**一个场地内**多位置×多接入机×多节点"的内存/队列/SD 膨胀，Pi 4b 只有 ~460 MB 可用。**对策**：`MAX_GATEWAYS`/`MAX_NODES_PER_GATEWAY`/`DIAL_CONCURRENCY` 硬闸 + 每接入机独立队列 + 超限明确文案；S9 压测给默认值。**[需要实机验证]**
+- **R16 跨场地网络可达（定案后已移出关键路径）**：每场地一套实例 ⇒ 场地实例永远只拨本场地的接入机，不存在"跨场地打通网段"这件事。可达性需求只剩**汇聚实例 → 各场地实例**一条（只读、可失败、失败就显示陈旧）。若汇聚也嫌麻烦，可以完全不用 S11，退回"每场地各看各的 + 归档包"。**[当前无法确认：各场地是否在同一局域网内]**
+- **R17 场地间数据隔离不足（风险位置转移）**：场地实例内多位置仍可能串（布局/告警/事件按 `site_id` 过滤，位置维度靠 `relay_id`）；更集中处是**汇聚实例里多场地同库**——那里漏一次 `site_id` 过滤就是跨场地污染，且肉眼最难发现。**对策**：`test_site_isolation.py` 做成 CI 门槛（S3 起，覆盖设置/布局/事件/告警/保留/WS 六面）+ 查询层强制 site 参数（不传=当前场地而非"全部"）+ 汇聚实例的数据一律 `origin='aggregated'` 可过滤。**[根据设计风险推断]**
+- **R18 归档包成为唯一的完整数据搬家通道**（低）：云已排除，归档 ZIP 就成了跨场地/备份的唯一路径，一旦被坏包污染导入会污染现网库。**对策**：导入只允许进**新库文件**再人工切换，禁止"原地覆盖当前库"；导入前校验 `schema_version` 与清单。**[根据设计权衡]**
+- **R19 汇聚数据被误读成实时**（中，S11 专属）：滞后数值一旦画进"当前值"曲线，运营者会按过期信息做现场判断——这是本系统里少数**会导致真实世界错误决策**的路径，性质与"把离散 RSSI 冒充连续频谱"同类。**对策**：`last_sync_at/lag_s` 常驻显示 + 超阈值置灰 + `test_aggregate_staleness.py` 断言 + aggregator 角色下不提供 `/ws/bridge`。**[规范 §2.3 延伸]**
+- **R20 多套实例的版本漂移**（中，定案的固有代价）：N 个场地各跑一套后端与一个库，Alembic 版本、`PROTOCOL_VERSION`、serve.mjs 都可能不同代；汇聚实例要能容忍"某场地落后一个版本"而不是同步失败原因不明。**对策**：`/api/health` 与 `/api/aggregate/*` 都回 `schema_version`+`app_version`，汇聚侧把不匹配显式列为一种失败原因；升级顺序写进部署文档（先场地后汇聚）。**[根据发布拓扑经验推断，参见本项目记忆里"包内固件清单必落后一代"的同类教训]**
+
+---
+
+## 10. 明确不做（YAGNI，第一版）
+
+不引入 MQTT/Redis/消息代理；不做第三方插件动态代码加载与插件市场；**不做云端部署——连"网关→云上行钩子"也不做**（2026-10-28 用户定：整套系统本地化部署为主；跨机器只走局域网 WS、只读汇聚拉取与本地归档包）；不重写原 `web/`、不动 `firmware/`、不改帧协议与 `PROTO_VERSION`；不改 Android `app/`；**不做"跨场地实时透传/写穿"**——汇聚实例只读、只拉摘要与事件，绝不把命令写到别的场地的板子上；**不做多租户 RBAC**（每场地一套实例后，"这台机器给谁用"就是天然的隔离边界；只保留汇聚用的只读 token）；不在无固件扩容前宣称 40+ 频道可用。
+
+**"不做云端部署"的边界要说清**：这条约束管的是 **RF Track 的数据与后端**（配置、事件、摘要、告警一律不出场地）。原有的 GitHub Pages 发布不受影响、也不该被这条决定牵连——Pages 上放的是静态页面与固件二进制清单，`serial/flasher.ts` 的固件清单就来自那里（见 [`data-flow.md`](../architecture/data-flow.md) 刷写行），拿掉它等于弄坏刷写流程。两者不是同一件事。
+
+---
+
+## 11. 待用户点头的默认值（本方案已按推荐值写死，可推翻）
+
+| 项 | 本方案默认 | 备选 |
+|---|---|---|
+| 目录名 | `repo/rftrack/`（backend/frontend 同仓） | `gateway/`、独立仓库 |
+| 栅格 | 自研 12 列 | gridstack.js CDN |
+| 后端部署位置 | Pi（Python 3.13.5 已在，同机贴 serve.mjs 最近） | Mac 本机（开发期） |
+| **层级建模** | **已定（用户 2026-10-28 明确）**：场地 → **中继（物理位置 relay）** → **接入机 gateway（一个位置可多台）** → 节点；三级都建表，从 `001_baseline` 起、`site_id` 贯穿配置/布局/事件/摘要/告警，不留后补债 | ①合并位置与机器为一张表（**已否决**：用户要"两者都要"，合并后"一个位置两台机器"无处表达）；②后补场地列（**已否决**：等于给自己留一次全表迁移） |
+| **部署形态** | **已定案（用户 2026-10-28）：每场地一套本地实例 + 局域网只读汇聚实例（S11）**。汇聚只拉摘要/事件、只读、必须显示滞后 | 单实例管多场地（跨场地网段是未解项，已排除）；纯归档汇总（S11 可整体不做，退回这条也不返工） |
+| 鉴权 | 场地实例绑 `127.0.0.1`/局域网 + 可选 token；**新增一档"汇聚只读 token"**（`/api/aggregate/*` 与同步请求用） | 直接上技能基线 JWT |
+| 原 SPA 接入 | 经后端 `/ws/bridge/{ep}` 字节透传（可多浏览器扇出） | 保持直连 8080（则后端与页面抢端点） |
+| LLM | 不进 S1–S9，可选 S10 | 与 S7 并行 |
+| **LLM provider 取向** | **本地优先**（ollama/vLLM）；云端 provider 属"数据出网"，须显式勾选 + 常驻提示 + 脱敏不可关 | 云端优先（**已否决**，与"不做云端部署"冲突） |
+
+---
+
+## 12. 一句话结论
+
+软件侧（S0–S9）在**零固件改动、零原页面改动**的前提下即可交付一个可持久化、**可多场地/多中继/多节点**、可后台分析、可组件化拖拽、**完全本地部署**的监测工作台；唯一必须先做的事是 S0——把 Pi 上已经跑着但没提交的 1234 行改动收进版本控制（**"零固件改动"说的是本计划的 S 阶段自身**；工作区里并行会话已有一段未提交、未实测的固件 F1 实现，S0 要把 web 与 firmware 两批**分开提交**，见 S0 行与 R13）。
+多场地这条新需求**没有改变"先做软件 S1–S9"的结论**，只改变了三件事：①`site`/`relay`/`gateway` 三级必须从 `001_baseline` 就建（不能后补）；②`test_site_isolation.py` 成为与帧对拍同级的门槛；③按定案的"每场地一套实例 + 局域网只读汇聚"，汇聚实例的唯一新风险是**把滞后数据画成实时**（R19），所以滞后徽标与陈旧置灰属于验收项而不是 polish。

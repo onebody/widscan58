@@ -15,7 +15,9 @@
 | M2 | 网关适配器 + 多节点 | Pi 网关新增脚本；**固件不改** | 两节点样本隔离测试通过 |
 | M3 | 40+ 频点展示 | 需固件新分支（`PROFILE_MAX_CHANNELS`、ENABLE 语义） | 频道数扩展测试通过 + 实机更新率达标 |
 | M4 | 多节点信号活动 / 疑似干扰 / 候选轨迹 | 否 | 分析算法单测 + 实机场景验证 |
-| M5 | 云端集中管理 | 否 | 后续另立计划 |
+| M5 | ~~云端集中管理~~ → **多场地/多中继本地管理**（2026-10-28 用户定调改判：本地化部署为主，**不做云端**） | 否 | 见 `RF_Track_落地实施方案与计划.md` §3/§4 的 `site`/`relay`/`gateway` |
+
+> **M2 已被取代（2026-10-28）**：本里程碑里"新建 `tools/rf_gateway.py`"的形态建议作废。`web/serve.mjs` 已在真板提供端点枚举、`busy/replaced` 独占语义、45 s 心跳、`/node?id=` 中继与 `/api/mode` 停启 RH，新后端改为它的**下游消费者**而不是重写一层网关——详见 [`web-extension-boundaries.md`](web-extension-boundaries.md) 中的取代说明与 [`../architecture/target-stack-landing.md`](../architecture/target-stack-landing.md) §4。M2 的**出口判据（两节点样本隔离）仍然有效**，只是实现载体从"新网关脚本"变成"经 `/ws/bridge/{ep}` 接进 serve.mjs"。
 
 每个里程碑独立提交、独立可回滚（git tag `rftrack-m<N>`；仓库为 fork 拓扑，遵循"替代类特性单独分支"惯例，`rf-track` 从 `main` 拉出）。
 

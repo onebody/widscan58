@@ -74,6 +74,10 @@ TrackModel（新增，唯一新状态根）
 
 形态建议：Pi 上 `tools/rf_gateway.py`（扩展 `serial_bridge.py` 的模式）提供 WebSocket（节点流）+ REST（节点管理/计划下发）。Web UI 通过 `?gateway=ws://pi/` 接入；无网关时一切照旧。**不在浏览器直连云端**（现有 https 页连局域网 http 设备已被浏览器策略阻断，见项目记忆/web README），云端只与网关对话 [推断]。
 
+> **本小节两处结论已被取代（2026-10-28，见 `docs/architecture/target-stack-landing.md` §4 与 `RF_Track_落地实施方案与计划.md` §10）**：
+> ① 上面"新建 `tools/rf_gateway.py`"的形态建议**作废**——`web/serve.mjs` 已在真板提供端点枚举/busy 语义/掉线心跳/`/node?id=` 中继/`/api/mode` 停启 RH，新后端改为它的**下游消费者**而不是重写一层网关。
+> ② 上面第 3 条与"可选云上行"**作废**——用户定"整套系统本地化部署为主，不进行云端部署"，跨机器只走局域网 WS 与本地归档包；多场地改为本地一等需求（`site`/`relay`/`gateway` 建模）。保留原文是为了留住审计时的判断依据。
+
 ## 5. 兼容性红线（验收标准）
 
 1. 拔掉网关、只插一个 C5：UI 行为与今天逐帧一致（同 view、同命令、同回放文件）。
