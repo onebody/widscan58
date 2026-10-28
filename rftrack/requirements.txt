@@ -1,0 +1,12 @@
+# RF Track 后端依赖（钉版，与 Pi 上 Python 3.13 / Mac 上 3.14 都验过可装）
+# 安装：python3 -m pip install -r rftrack/requirements.txt
+
+fastapi==0.133.1
+uvicorn==0.41.0
+SQLAlchemy==2.0.47
+alembic==1.18.4
+# probe 拨 serve.mjs 的 /api/endpoints 走它；TestClient 也依赖它
+httpx==0.28.1
+
+# 测试
+pytest==8.4.2

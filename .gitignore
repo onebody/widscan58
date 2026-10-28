@@ -20,3 +20,10 @@ web/public/firmware/
 
 *.widscan58
 __pycache__/
+
+# RF Track 后端：本地库、迁移前的自动备份、虚拟环境
+rftrack/backend/data/
+rftrack/backend/.backups/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
