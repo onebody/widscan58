@@ -310,7 +310,7 @@ rftrack/frontend/workbench/
 
 | 层 | 命令 | 门槛 | 当前状态 |
 |---|---|---|---|
-| 原 Web 单测 | `cd web && npm test` | 56/56 不退步 | **[已由本机实测]**（M0，tag `rftrack-m0`） |
+| 原 Web 单测 | `cd web && npm test` | 56/56 不退步 | **[已由本机实测]**（M0，tag `rftrack-m0`；**S6 收尾又跑一次 2026-10-30：10 个文件 / 56 passed，362 ms**——`web/` 从 S0 至今一行未碰，这一条是拿实测而不是拿"没改过所以应该没事"来结的） |
 | 原 Web 类型 | `npx tsc --noEmit` | 0 错误 | **[已由本机实测]** |
 | 原 Web e2e | `node e2e/headless.mjs --sim` | 28/28 不退步 | **[已由本机实测]** |
 | 固件宿主测试 | `pio test -e native` | 17/17 不退步 | **[已由本机实测]** |
