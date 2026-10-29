@@ -26,7 +26,7 @@ ESP32-C5 固件
 
 ## 2. 渲染路径
 
-`Store.ingest`（store.ts）按键写入并 `version++`；`main.ts` 用 `requestAnimationFrame` 帧循环（701/703 行附近）+ `setInterval`（677 行附近）按视图节流重绘，而非每帧推送订阅。行号基于 `rf-track` @`d53651b`（那批并行改动已随 `7bec675` 入库，工作树此后未再改动 web 源码，所以行号不再会漂移；若后续 S 阶段改动 `main.ts` 需重新核）。**[已由源码确认]**
+`Store.ingest`（store.ts）按键写入并 `version++`；`main.ts` 用 `requestAnimationFrame` 帧循环（701/703 行附近）+ `setInterval`（677 行附近）按视图节流重绘，而非每帧推送订阅。行号基于 `rf-track` @`98d496a`（那批并行改动已随 `7bec675` 入库，工作树此后未再改动 web 源码，所以行号不再会漂移；若后续 S 阶段改动 `main.ts` 需重新核）。**[已由源码确认]**
 
 含义（对 RF Track）：
 - 新组件接入点 = 订阅 Store 版本号或自行注册到渲染循环；无需框架。

@@ -43,7 +43,7 @@
 - 分支：`rf-track`（当前，@015018b，含 M0 基线与审计文档）、`main`（@01df9b6，vs origin/main 领先 54 / 落后 4）、`rh-uart-bridge`。**[已由源码确认]**
 - 工作区**不干净**：5 个已修改文件（web/package.json、package-lock.json、serve.mjs、src/i18n.ts、src/main.ts）与 4 个未跟踪文档（docs/ 下 3 份 ChatGPT 采集文档 + 本实施计划）。属并行会话工作，本阶段未触碰、未提交。**[已由源码确认，git status]**
 - 风险：RF Track 后续阶段开工前必须先与用户确认这批未提交修改的归属与处置（提交/暂存/忽略），避免混入产品线提交。**[根据源码推断]**
-- **2026-10-29 更新（上面三条是审计当时的快照，保留不改）**：那批未提交改动已由并行会话在 `7bec675` 全部入库（web 8 文件 + firmware 5 文件，捆成一个提交）；审计与方案文档另随 `d53651b` 入库；`rf-track` 现 @`d53651b`，并新建 `develop/rf-monitor-platform` + 注释 tag `rftrack-baseline-v0.1.0` 同指该提交。工作区现只剩 4 个刻意不提交的 untracked 文档（3 份 ChatGPT 采集 + 任务书）。上面的分支计数（领先 54 / 落后 4）与 `main`@01df9b6 未重新核实。**[已由 git log / git status 实测]**
+- **2026-10-29 更新（上面三条是审计当时的快照，保留不改）**：那批未提交改动已由并行会话在 `7bec675` 全部入库（web 8 文件 + firmware 5 文件，捆成一个提交）；审计与方案文档另随 `98d496a` 入库；`rf-track` 现 @`98d496a`，并新建 `develop/rf-monitor-platform` + 注释 tag `rftrack-baseline-v0.1.0` 同指该提交。工作区现只剩 4 个刻意不提交的 untracked 文档（3 份 ChatGPT 采集 + 任务书）。上面的分支计数（领先 54 / 落后 4）与 `main`@01df9b6 未重新核实。**[已由 git log / git status 实测]**
 
 ## 5. CI
 
