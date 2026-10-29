@@ -158,6 +158,17 @@ class Settings:
     #: （空串）= 这台实例只提供 API，页面另说——那时 `/api/health` 的 `workbench` 一节
     #: 如实回 `mounted=false`，不让运营者对着 404 猜是哪一步没做。
     workbench_dir: Path | None = DEFAULT_WORKBENCH_DIR
+    # --- S7：插件运行时的队列容量 ----------------------------------------------
+    #: 每 (插件, 网关) 一条有界队列的容量（批数）。`plugin_registry.queue_limit` 为 NULL 时
+    #: 跟随它——那一列是"这一支插件自己收紧/放宽"的位，这里是"这台机器整体能承受多少"。
+    #: 默认 64 批是量级判断不是实测：插件吃的是采集层已经解析好的点批，攒 64 批也就几十 KB，
+    #: 但**打满就丢最旧**这条纪律与 `queue_limit`（帧侧）完全一样——宁可丢历史也不 backpressure
+    #: 回喂帧的那只手。Pi 上可用内存约 460 MB（方案 §5），所以它必须可 env 覆盖。
+    plugin_queue_limit: int = 64
+    #: 插件运行时的总开关。默认开：S7 交付的就是"启用一支插件，判定自己在长"。
+    #: 关掉是合法部署形态（也是 S7 的回滚位——`RFTRACK_PLUGINS_ENABLED=0` 之后采集链路与插件
+    #: 上线前一模一样，不需要谁去挨个停用注册表里的行），健康检查照实说没启用、不算故障。
+    plugins_enabled: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -207,6 +218,10 @@ class Settings:
             raise ValueError("live_event_window 不能为负：0 已经表示快照不带事件")
         if self.refresh_ms_floor < 1:
             raise ValueError("refresh_ms_floor 至少 1 ms；0 会让刷新变成紧循环")
+        if self.plugin_queue_limit < 1:
+            raise ValueError(
+                "plugin_queue_limit 至少 1：0 等于插件队列只进不出，而现象只是「插件没产出」"
+            )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -264,6 +279,10 @@ class Settings:
             refresh_ms_floor=int(source.get("RFTRACK_REFRESH_MS_FLOOR", "200")),
             workbench_dir=_optional_path(
                 source.get("RFTRACK_WORKBENCH_DIR"), DEFAULT_WORKBENCH_DIR
+            ),
+            plugin_queue_limit=int(source.get("RFTRACK_PLUGIN_QUEUE_LIMIT", "64")),
+            plugins_enabled=_bool(
+                source.get("RFTRACK_PLUGINS_ENABLED", "1"), "RFTRACK_PLUGINS_ENABLED"
             ),
         )
 

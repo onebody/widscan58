@@ -255,10 +255,22 @@ def test_deleting_a_layout_takes_its_tiles_with_it(client, site):
     assert client.get("/api/layouts", params={"site": site["site_id"]}).json() == []
 
 
-@pytest.mark.skip(reason="按组件的订阅在 S5/S7 才存在：今天没有可断言之物，不假装测过")
+@pytest.mark.skip(
+    reason="按组件的订阅在前端那一层（工作区租约），pytest 够不着：已由 "
+    "rftrack/frontend/workbench/test/store.test.mjs:340（取消订阅要真的删掉）与 "
+    "rftrack/frontend/e2e/workbench.mjs:1632（删空格子后 audit.subscriptions === 0）断言"
+)
 def test_deleting_a_tile_clears_its_subscriptions():
-    """§4.4 第八条的后半句。后端目前的订阅只到 (gateway, ep)（`services/ws_bridge.py`），
-    还没有"某个组件订阅某路数据"这一层，所以这条只能等 S5 落地后再写。"""
+    """§4.4 第八条的后半句。
+
+    S6 之前这条确实"无可断言之物"（那时还没有组件订阅）；S5/S6 把这一层建出来了，但它建在**前端**
+    ——`workbench/store.js` 的租约记账（`subscribe()` 返回退订，`audit()` 把 `subs` 汇总成一个可
+    读的数），后端到今天为止只有 `(gateway, ep)` 那一层的连接（`services/ws_bridge.py`）。
+
+    留在这里不删是因为它会一直被 `--verify` 之类的清单念出来：真正的判据在前端那两条上，而这两条
+    恰好是"整页删空再读账"这种只有浏览器里才成立的动作。把后端测试伪造出来（比如给 API 加一个
+    订阅表）等于为了清掉一个 skip 而改产品形状。
+    """
 
 
 # --- 第九条：局部设置绕不过权限、硬件与资源限制 ------------------------------

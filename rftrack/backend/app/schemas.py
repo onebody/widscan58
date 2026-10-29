@@ -1,4 +1,4 @@
-"""Pydantic 入/出参。S2 只覆盖层级三级与节点读取，S4 加设置系统与布局。"""
+"""Pydantic 入/出参。S2 只覆盖层级三级与节点读取，S4 加设置系统与布局，S7 加插件配置的入参。"""
 
 from __future__ import annotations
 
@@ -226,3 +226,19 @@ class WidgetOut(BaseModel):
     declaration_error: str | None = None
     #: 生效值 + 来源链（默认 < 全局 < 场地 < 布局 < 实例）。
     effective: dict[str, Any] = Field(default_factory=dict)
+
+
+class PluginConfigUpdate(BaseModel):
+    """`PUT /api/plugins/{id}/config` 的**整份替换**语义。
+
+    可编辑的只有这三列。没出现的 `queue_limit` 是"这一支不设自定上限"（跟随全局键
+    `plugin_queue_limit`），不是"保持原值"——否则页面上就没有入口能把它清掉。
+    `name`/`version`/`summary` 不在这里出现：那三样由代码那一份覆写，属于登记而不是配置。
+
+    下界刻意不写成 `ge=1`：Pydantic 拦下来回的是 FastAPI 的校验数组，而全站错误体只有
+    `{"reason": …}` 一种形状，所以"配错要说什么"由 `services/plugin_admin.py` 来说。
+    """
+
+    scope: str = "global"
+    scope_id: int | None = None
+    queue_limit: int | None = None

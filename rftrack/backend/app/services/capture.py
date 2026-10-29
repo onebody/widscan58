@@ -42,6 +42,7 @@ from sqlalchemy import select
 from ..config import Settings
 from ..database import Database
 from ..models import Gateway, Node, Relay, SignalEvent, utcnow
+from ..plugins.base import FrameBatch, SlotPoint
 from . import frame_parser, ingest, retention
 from .dialer import ENDPOINTS_PATH, bridge_url, classify
 from .instance import effective_instance_role
@@ -76,6 +77,20 @@ class LivePublisher(Protocol):
     """
 
     def publish(self, site_id: int, message: dict[str, Any]) -> int: ...
+
+
+class PluginFeeder(Protocol):
+    """插件运行时的收件口（S7）。两问都得**非阻塞、不碰库**。
+
+    先问 `armed` 再决定要不要构造那一批：S7 的回滚判据是"全部停用即等效不存在"，而采集这边
+    每帧都要走这条路——如果停用还留着建批与投喂的动作，那关掉的只是产出，不是这件事本身。
+    `offer` 抛出来的一切由采集层记在自己的计数上，绝不让一帧的采集停在半路上。
+    """
+
+    @property
+    def armed(self) -> bool: ...
+
+    def offer(self, batch: FrameBatch) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -245,6 +260,7 @@ class CapturePipeline:
         resolver: EndpointResolver | None = None,
         transport=None,
         publisher: LivePublisher | None = None,
+        plugins: PluginFeeder | None = None,
         aggregator: retention.SummaryAggregator | None = None,
         log=LOG,
     ) -> None:
@@ -255,6 +271,7 @@ class CapturePipeline:
         self.aggregator = aggregator or retention.SummaryAggregator.from_settings(settings)
         self.resolver = resolver or BridgeEndpointResolver(db, transport, settings)
         self.publisher = publisher
+        self.plugins = plugins
         self._endpoints: dict[tuple[int, str], _Endpoint] = {}
         self._queues: dict[int, GatewayQueue] = {}
         self._refs: dict[tuple[int, str], NodeRef] = {}
@@ -287,6 +304,12 @@ class CapturePipeline:
         self.pending_dropped = 0
         self.gateways_refused = 0
         self.observer_errors = 0
+        #: 投喂给插件的三条账。`plugin_refused` 是"这批插件那边没收"（撞队列条数硬闸），
+        #: 队列满而挤掉旧批的那种丢由运行时自己数（`plugin_runtime.status()`）——两边的"丢"
+        #: 主语不同：那边丢的是**已经交出去的**一批，这里一个字节都没离开采集层。
+        self.plugin_batches = 0
+        self.plugin_refused = 0
+        self.plugin_errors = 0
         #: 归属表没刷成功过几轮。不是故障申报，只是"新登记的板子可能还没被认领"的线索。
         self.node_table_failures = 0
         self.ticks = 0
@@ -672,6 +695,7 @@ class CapturePipeline:
                 source=endpoint.source,
             )
         self.points_stored += len(points)
+        self._feed_plugins(node, endpoint, points, decoded, moment)
         if self.publisher is None:
             return
         try:
@@ -700,6 +724,49 @@ class CapturePipeline:
             return
         self.published += 1
         self.published_readers += readers
+
+    def _feed_plugins(
+        self,
+        node: NodeRef,
+        endpoint: _Endpoint,
+        points: list[dict[str, Any]],
+        decoded: dict[str, Any],
+        moment: datetime,
+    ) -> None:
+        """把这一帧原样交给插件运行时——**只交已经归属成功的**那一帧。
+
+        批里的身份全部来自 `NodeRef`（`_emit` 的入参），不是插件自己填的：`plugin_finding`
+        上"这是 A 场地那块板的实时读数"这句话只能由采集层说。`ts` 用观测时刻而不是落库时刻，
+        回放整晚录制文件时判定的时间轴才落在数据那一侧。
+
+        位置在发布之前、`points_stored` 之后：`_emit` 后半段有个 `publisher is None` 的提前返回，
+        放在它后面就成了"没订阅页面就没有判定"。异常一律在这里吃掉——插件是采集的下游，
+        它坏了轮不到采集停（任务书 §10.4），而代价必须是一个数，不是一句日志。
+        """
+        feeder = self.plugins
+        if feeder is None or not feeder.armed:
+            return
+        batch = FrameBatch(
+            site_id=node.site_id,
+            gateway_id=node.gateway_id,
+            node_id=node.node_id,
+            source=endpoint.source,
+            ts=moment,
+            seq=decoded["seq"],
+            points=tuple(
+                SlotPoint(slot=point["id"], rssi=point["rssi"], ema=point["ema"])
+                for point in points
+            ),
+        )
+        try:
+            outcome = feeder.offer(batch)
+        except Exception as exc:
+            self.plugin_errors += 1
+            self.log.warning("plugin feed failed: %s", exc)
+            return
+        self.plugin_batches += 1
+        if outcome == "refused":
+            self.plugin_refused += 1
 
     # --- 一轮：内存侧准备 → 线程侧读写 → 内存侧结算 ---------------------------
 
@@ -1013,6 +1080,9 @@ class CapturePipeline:
             "pending_dropped": self.pending_dropped,
             "attributed_late": self.attributed_late,
             "node_table_failures": self.node_table_failures,
+            "plugin_batches": self.plugin_batches,
+            "plugin_refused": self.plugin_refused,
+            "plugin_errors": self.plugin_errors,
             "published": self.published,
             "events_published": self.events_published,
             "published_readers": self.published_readers,

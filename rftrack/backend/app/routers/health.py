@@ -11,8 +11,8 @@
 `capture` 一节是 S6 补的，它有一个别处没有的约束：**这一节是在线程池里读的，而采集的内存
 状态在事件循环上一直变**。所以 `CapturePipeline.status()` 只读整数与"发布后不再原地改"的
 快照，不迭代活字典——健康检查正好在板子最多、最忙的时候被点开，那时一次
-`dictionary changed size during iteration` 代价最大。`replay` 与 `live` 两节同一条约束、
-同一个做法。
+`dictionary changed size during iteration` 代价最大。`replay`、`live` 与 S7 的 `plugins`
+三节同一条约束、同一个做法。
 """
 
 from __future__ import annotations
@@ -109,6 +109,10 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
     if live["problem"]:
         problems.append(live["problem"])
 
+    plugins = request.app.state.plugins.status()
+    if plugins["problem"]:
+        problems.append(plugins["problem"])
+
     return {
         "status": "ok" if not problems else "degraded",
         "problems": problems,
@@ -139,6 +143,11 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         # 它是"工作台为什么不动"的第二答案——`capture` 说数据进没进来，这一节说进来了
         # 有没有送出去。没页在连时 `sites: []` 也是正常形态，所以 `problem` 恒为 None。
         "live": live,
+        # 插件运行时这一节回答"判定为什么没有落库"：开关开没开、循环起没起、快照里有哪几支、
+        # 搬了几批、丢在队列还是丢了身份、上一轮的错。`/api/plugins` 说的是"哪一支插件什么状态"，
+        # 这一节说的是"这台机器上的运输层还在不在跑"——后者坏了三支插件会一起不说话，
+        # 而插件页上三支都显示 running 的上一拍。
+        "plugins": plugins,
         # `/ws/bridge` 的实时占用：谁在看哪块板、写权在谁手上。没人在连也要说得出口
         # （`sessions: []`）——"这张表还没做"和"现在确实没页在连"是两个不同的结论。
         "bridge": request.app.state.bridge.status(),

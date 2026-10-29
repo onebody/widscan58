@@ -170,6 +170,7 @@ def chain(client):
         assert row["transport"]["addr"] == addr, "节点行的地址口径与 `ingest` 不同源了"
         nodes[slug] = {
             "site_id": site["site_id"],
+            "relay_id": relay["relay_id"],
             "gateway_id": gateway["gateway_id"],
             "node_id": row["node_id"],
             "ep": ep,
@@ -179,7 +180,53 @@ def chain(client):
     return nodes
 
 
-def make_pipeline(client, *, resolver=None, publisher=None, **overrides) -> CapturePipeline:
+@pytest.fixture
+def odd_ids(client, chain):
+    """一块"三个身份两两不同"的板：批里的 `site_id`/`gateway_id`/`node_id` 不许互相顶。
+
+    `chain` 给的每块板恰好 site==gateway==node（1 与 2），于是"把 `gateway_id` 抄进 `node_id`"
+    这类错在那里完全看不出来——同一条断言会照样绿。身份是运行时盖进判定行的唯一凭据，只有用
+    一组互不相等的数才测得出抄错了栏。
+    """
+    main = chain["main"]
+    gateway = client.post(
+        "/api/gateways",
+        json={"relay_id": main["relay_id"], "name": "pi-odd", "kind": "usb-bridge"},
+    ).json()
+    endpoints = [
+        {
+            "id": f"serial:/dev/odd-{n}",
+            "kind": "serial",
+            "label": f"odd-{n}",
+            "path": f"/dev/odd-{n}",
+            "online": True,
+            "busy": False,
+        }
+        for n in (1, 2)
+    ]
+    with client.app.state.db.scope() as session:
+        reconcile(
+            session,
+            session.get(Gateway, gateway["gateway_id"]),
+            endpoints,
+            Settings(max_nodes_per_gateway=8),
+        )
+    listed = client.get(f"/api/nodes?gateway={gateway['gateway_id']}").json()
+    second = [row for row in listed if row["transport"]["addr"] == "/dev/odd-2"][0]
+    out = {
+        "site_id": main["site_id"],
+        "gateway_id": gateway["gateway_id"],
+        "node_id": second["node_id"],
+        "ep": "serial:/dev/odd-2",
+        "addr": "/dev/odd-2",
+    }
+    assert len({out["site_id"], out["gateway_id"], out["node_id"]}) == 3, out
+    return out
+
+
+def make_pipeline(
+    client, *, resolver=None, publisher=None, plugins=None, **overrides
+) -> CapturePipeline:
     """一套挂在被测库上的采集管道：后台任务不起，节拍由测试自己一脚一脚踩。"""
     settings = Settings(
         db_path=client.app.state.settings.db_path,
@@ -193,6 +240,7 @@ def make_pipeline(client, *, resolver=None, publisher=None, **overrides) -> Capt
         settings,
         resolver=resolver if resolver is not None else FakeResolver(),
         publisher=publisher,
+        plugins=plugins,
     )
 
 
@@ -838,3 +886,273 @@ def test_crc_errors_are_counted_once_across_a_reconnect(client, chain):
     pipeline.feed(main["gateway_id"], main["ep"], bytes(broken))
     pipeline.drain_all()
     assert totals() == (first[0] * 2, first[1] * 2, 0)
+
+
+class FakeFeeder:
+    """插件运行时的收件口替身：只回答两件事——"现在有没有人收"和"这批我怎么处理"。
+
+    `armed` 做成 property 是故意的：采集侧每帧都要问它，测试要数得出**问了几次**，好把
+    "全停用时这条热路径上只做一次真值判断"这件事钉成可断言的形状。
+    """
+
+    def __init__(self, *, armed: bool = True, outcome: str = "queued", boom: bool = False) -> None:
+        self._armed = armed
+        self.outcome = outcome
+        self.boom = boom
+        self.armed_checks = 0
+        self.seen: list = []
+
+    @property
+    def armed(self) -> bool:
+        self.armed_checks += 1
+        return self._armed
+
+    def offer(self, batch) -> str:
+        self.seen.append(batch)
+        if self.boom:
+            raise RuntimeError("runtime gone")
+        return self.outcome
+
+
+def test_an_attributed_frame_is_handed_to_the_plugins_whole(client, odd_ids):
+    """一帧归属成功 = 投喂一批：身份来自节点行，读数来自这一帧，两条不许各走一路。
+
+    钉这三个身份字段是因为它们是"判定属谁"的唯一凭据：运行时把它们原样盖进 `plugin_finding`，
+    插件自己说的不算（见 `plugins/base.py`）。所以这里要证明的是**归属完成的那一帧**才投喂，
+    且投喂的就是那一帧。
+    """
+    node = odd_ids
+    feeder = FakeFeeder()
+    publisher = FakePublisher()
+    pipeline = make_pipeline(
+        client,
+        resolver=FakeResolver({node["gateway_id"]: {node["ep"]: node["addr"]}}),
+        publisher=publisher,
+        plugins=feeder,
+    )
+
+    pipeline.feed(node["gateway_id"], node["ep"], METRICS)
+    pipeline.drain_all()
+    pipeline.tick()  # 归属表在这一拍才读进来：`_emit` 是这一拍里发生的
+
+    (batch,) = feeder.seen
+    assert (batch.site_id, batch.gateway_id, batch.node_id) == (
+        node["site_id"],
+        node["gateway_id"],
+        node["node_id"],
+    )
+    assert batch.source == "real"
+    assert [p.slot for p in batch.points] == [2, 4, 7]
+    assert (batch.points[0].rssi, batch.points[0].ema) == (-36.0, -35.5)
+    # 与 `/ws/live` 那条消息同一帧、同一时刻：两路口径早晚对不上，是因为它们各自读了一遍时间。
+    assert batch.seq == publisher.messages[0][1]["seq"]
+    assert batch.ts == pipeline.store.series(node["gateway_id"], node["addr"], 2)[0]["ts"]
+    assert pipeline.status()["plugin_batches"] == 1
+
+
+def test_a_frame_nobody_claimed_is_never_handed_to_a_plugin(client, chain):
+    """认不出是谁的点就不许投喂——那等于让插件替一个没有身份的读数产出判定。
+
+    与"归不了属的点不落摘要、不发布"是同一条纪律（`_attribute` 的注释）：投喂是第三条出仓的路，
+    漏了它就会出现"摘要里没有、判定里却有"这种只能靠猜才能对齐的现象。
+    """
+    main = chain["main"]
+    feeder = FakeFeeder()
+    pipeline = make_pipeline(client, resolver=FakeResolver(), plugins=feeder)
+
+    pipeline.feed(main["gateway_id"], main["ep"], METRICS)
+    pipeline.drain_all()
+    pipeline.tick()
+
+    assert feeder.seen == []
+    assert pipeline.status()["plugin_batches"] == 0
+
+
+def test_a_late_attributed_frame_is_handed_too(client, chain):
+    """迟到归属的那一帧也走同一条投喂路：钩子挂在 `_emit`，不是挂在"实时"那一段。
+
+    缓冲里攒的帧一旦认领上就要原样出去（环、摘要、`/ws/live` 三条都是），插件是第四条。少了
+    这一条的现象很具体：刚连上的头几秒数据在页面上看得到、在判定里看不到。
+    """
+    main = chain["main"]
+    feeder = FakeFeeder()
+    resolver = FakeResolver()
+    pipeline = make_pipeline(client, resolver=resolver, plugins=feeder)
+    pipeline.feed(main["gateway_id"], main["ep"], METRICS)
+    pipeline.drain_all()
+    assert feeder.seen == []
+
+    resolver.tables[main["gateway_id"]] = {main["ep"]: main["addr"]}
+    pipeline.tick()
+
+    (batch,) = feeder.seen
+    assert batch.node_id == main["node_id"]
+    assert [p.slot for p in batch.points] == [2, 4, 7]
+
+
+def test_a_replayed_frame_reaches_the_plugin_as_mock(client, chain):
+    """来源是采集层唯一说得清"这是录的还是live的"的一栏，插件与判定都得跟着它。
+
+    任务书要求模拟数据必须标 `MOCK/DEMO`：这一格要是漏了，回放一整晚就会在判定表里留下一串
+    看起来像现场的越限记录。
+    """
+    main = chain["main"]
+    feeder = FakeFeeder()
+    pipeline = make_pipeline(
+        client, resolver=FakeResolver({main["gateway_id"]: {main["ep"]: main["addr"]}}),
+        plugins=feeder,
+    )
+
+    pipeline.feed(main["gateway_id"], main["ep"], METRICS, source="mock")
+    pipeline.drain_all()
+    pipeline.tick()
+
+    (batch,) = feeder.seen
+    assert batch.source == "mock"
+
+
+def test_everything_disabled_costs_the_capture_one_check_per_frame(client, chain):
+    """三支插件全停用 = 采集这边除了问一次"有没有人收"，什么都不做。
+
+    这是 S7 整段回滚判据（"全部停用即等效不存在"）在**热路径**上的形状：如果停用还留着构造批、
+    投喂、计数这些动作，那"关掉插件"就只是关掉产出，而不是关掉这件事本身。
+    """
+    main = chain["main"]
+    feeder = FakeFeeder(armed=False)
+    publisher = FakePublisher()
+    pipeline = make_pipeline(
+        client,
+        resolver=FakeResolver({main["gateway_id"]: {main["ep"]: main["addr"]}}),
+        publisher=publisher,
+        plugins=feeder,
+    )
+
+    result = run(client, pipeline, (main["gateway_id"], main["ep"], METRICS))
+
+    assert feeder.seen == []
+    assert feeder.armed_checks == 1
+    status = pipeline.status()
+    assert (status["plugin_batches"], status["plugin_refused"], status["plugin_errors"]) == (0, 0, 0)
+    # 采集本身一个字都没变：关掉插件不改动 S6 的任何产出。
+    assert result == {"attributed": 3, "summaries": 3, "events": 0, "error": None}
+    assert publisher.messages[0][1]["kind"] == "samples"
+
+
+def test_a_refused_batch_is_counted_and_the_frame_still_goes_out(client, chain):
+    """插件那头收不下，不改采集这头的任何一件事：丢的只是判定的一条输入，且必须数得出来。
+
+    "不得破坏原有功能"落在这一格：透传、环、摘要、`/ws/live` 都不许因为插件的背压而少一条。
+    """
+    main = chain["main"]
+    feeder = FakeFeeder(outcome="refused")
+    publisher = FakePublisher()
+    pipeline = make_pipeline(
+        client,
+        resolver=FakeResolver({main["gateway_id"]: {main["ep"]: main["addr"]}}),
+        publisher=publisher,
+        plugins=feeder,
+    )
+
+    result = run(client, pipeline, (main["gateway_id"], main["ep"], METRICS))
+
+    status = pipeline.status()
+    assert (status["plugin_batches"], status["plugin_refused"]) == (1, 1)
+    assert (result["summaries"], len(publisher.messages)) == (3, 1)
+
+    # `dropped_oldest` 不算这里的"拒收"：那一批已经交出去了，丢的是运行时队里最旧的上一批，
+    # 主语在运行时那边（它自己的 `dropped_batches` 数着）。混进这里就会两头各数一遍。
+    feeder.outcome = "dropped_oldest"
+    pipeline.feed(main["gateway_id"], main["ep"], METRICS)
+    pipeline.drain_all()
+
+    status = pipeline.status()
+    assert (status["plugin_batches"], status["plugin_refused"]) == (2, 1)
+
+
+def test_a_feeder_that_throws_costs_a_counter_and_nothing_else(client, chain):
+    """投喂口抛异常不许停在半帧上：判定是采集的**下游**，它坏了轮不到采集停。
+
+    任务书 §10.4 那句"插件故障不得拖垮采集"在代码里就是这一格。这里连"数据已经入了环与累加器"
+    都要钉住——发布口在投喂之后，抛出去就会留下一条"环里有、页面上没有"的缝。
+    """
+    main = chain["main"]
+    feeder = FakeFeeder(boom=True)
+    publisher = FakePublisher()
+    pipeline = make_pipeline(
+        client,
+        resolver=FakeResolver({main["gateway_id"]: {main["ep"]: main["addr"]}}),
+        publisher=publisher,
+        plugins=feeder,
+    )
+
+    result = run(client, pipeline, (main["gateway_id"], main["ep"], METRICS))
+
+    assert pipeline.status()["plugin_errors"] == 1
+    assert pipeline.status()["plugin_batches"] == 0
+    assert result["summaries"] == 3
+    assert len(publisher.messages) == 1
+
+
+def test_the_real_runtime_turns_a_captured_frame_into_a_finding(client, odd_ids):
+    """接线对拍：采到的字节经**真运行时**落成一条判定，身份与节点行一致。
+
+    上面几条都挂在替身上，而替身会说谎——它签名对了就行，真运行时的 `offer()` 却要认队列、
+    认上限、认启用状态。这条用真 `PluginRuntime` 走完整条链，钉的正是"两边说的是同一个协议"：
+    判定行上的 `node_id`/`source`/`producer` 都来自运行时盖章，不是插件填的。板子取 `odd_ids`
+    （三个身份互不相等），否则"抄错栏"在这条路上也是看不见的。
+
+    这里用 `alert-engine`：它读绝对越限，单帧就说话（`anomaly-detector` 要先攒基线，拿它测接线
+    得先喂好几帧，测的就不是这一件事了）。
+    """
+    from app.models import Node, PluginFinding, PluginRegistry
+    from app.services.plugin_runtime import PluginRuntime
+
+    node = odd_ids
+    with client.app.state.db.scope() as session:
+        session.get(PluginRegistry, "alert-engine").enabled = True
+    runtime = PluginRuntime(
+        client.app.state.db,
+        client.app.state.settings,
+        implementations={"alert-engine": _AlertEngineForWiring},
+    )
+    runtime.refresh()
+    pipeline = make_pipeline(
+        client, resolver=FakeResolver({node["gateway_id"]: {node["ep"]: node["addr"]}}),
+        plugins=runtime,
+    )
+
+    pipeline.feed(node["gateway_id"], node["ep"], METRICS)
+    pipeline.drain_all()
+    pipeline.tick()
+    runtime.run_once()
+
+    rows = []
+    with client.app.state.db.scope() as session:
+        rows = list(session.execute(select(PluginFinding)).scalars().all())
+    assert rows, "采到帧、插件启用，却一条判定都没落库"
+    assert {row.node_id for row in rows} == {node["node_id"]}
+    assert {row.site_id for row in rows} == {node["site_id"]}
+    assert {row.gateway_id for row in rows} == {node["gateway_id"]}
+    assert {row.source for row in rows} == {"real"}
+    assert rows[0].producer.startswith("rule:alert-engine@")
+    # 节点身份来自归属那一步，投喂没有另开一条查库的路：`Node` 行仍然是唯一的一份。
+    with client.app.state.db.scope() as session:
+        assert session.get(Node, node["node_id"]).transport_addr == node["addr"]
+
+
+class _AlertEngineForWiring:
+    """只说话一次的最小插件：这条测试要的是"判定落库的形状"，不是规则本身。
+
+    真 `AlertEngine` 的产出条数随阈值与抑制窗口变，把那些一起钉进来会让这条测试变成
+    `test_plugin_rules.py` 的第二份拷贝。
+    """
+
+    CONFIG_KEYS = ("threshold_db",)
+
+    def feed(self, batch, config):
+        from app.plugins.base import Finding
+
+        return [Finding(kind="wired", slot=batch.points[0].slot, metric="rssi", value=-40.0)]
+
+    def stats(self) -> dict[str, int]:
+        return {}

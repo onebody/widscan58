@@ -185,7 +185,59 @@ KEYS: tuple[KeySpec, ...] = (
         # 要它有执行者，先得有 RAW IQ 的存储与磨损实测，同属 S9。
         pending_stage="S9",
     ),
-    KeySpec("alert_defaults", "object", SITABLE, default={}),
+    KeySpec(
+        "alert_defaults",
+        "object",
+        SITABLE,
+        default={},
+        # 今天没有任何代码读它。S8 的告警规则表（`alert_rule`）才是它的执行者；在那之前
+        # 不许把它当成"已经在管事"——插件读的是下面四条各自的键，不是这个自由格式的对象。
+        pending_stage="S8",
+    ),
+    # --- S7：三支内置规则插件的判据（执行者＝`app/plugins/*.py`）-----------------
+    # 这四条的边界都写在这里而不是散在插件里：插件只从 `config` 读生效值，代码里不留任何
+    # 阈值字面量兜底（配错应该表现为"它不说话了"，不是"它悄悄按代码那个数说话了"）。
+    # `anomaly_rise_db` 是**相对**抬升量，`threshold_db` 是**绝对**电平：两支插件读的键不同，
+    # 说的也不是同一件事，这是它们能共存的前提。
+    KeySpec(
+        "anomaly_rise_db",
+        "float",
+        SITABLE,
+        minimum=1,
+        maximum=60,
+        default=10,
+        unit="dB",
+    ),
+    KeySpec(
+        "interference_min_nodes",
+        "int",
+        SITABLE,
+        # 下界是 2 而不是 1：一块板自己不构成"多处同时"。上界取 32 是场地规模的合理天花板，
+        # 真实接入规模待 S9 压测（超过它就把这条规则当"整场判定"用，不是当计数用）。
+        minimum=2,
+        maximum=32,
+        default=2,
+    ),
+    KeySpec(
+        "interference_window_s",
+        "int",
+        SITABLE,
+        minimum=1,
+        maximum=300,
+        default=5,
+        unit="s",
+    ),
+    KeySpec(
+        "alert_hold_s",
+        "int",
+        SITABLE,
+        # 0 合法且有意义：不抑制，每次越限都留一条。运营者要的就是这个证据密度时不该被拦，
+        # 但写放大由他自己承担——`plugin_finding` 与事件表同一条场地级保留口径（S6 的 purge）。
+        minimum=0,
+        maximum=3600,
+        default=30,
+        unit="s",
+    ),
     # 本实例服务哪个场地：改它就是换拨号对象，属于"要重启/重连"那一类。
     KeySpec(
         "current_site_id", "int", GLOBAL_ONLY, minimum=1, default=None, requires_restart=True

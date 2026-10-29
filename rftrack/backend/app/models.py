@@ -58,6 +58,12 @@ GATEWAY_KINDS = ("usb-bridge", "mcu-relay", "local-dev")
 DIAL_STATES = ("online", "unreachable", "dialing")
 NODE_STATUSES = ("active", "lost", "disabled")
 SITE_ORIGINS = ("local", "aggregated")
+#: 插件的作用域档位。与方案 §3 里 `alert_rule.scope`（S8）同一套词，但**不含 `node`**：
+#: 规则锁到单块板子会退化成"每块板一条规则"，而这三支规则的判断对象本来就是跨节点的。
+PLUGIN_SCOPES = ("global", "site", "relay", "gateway")
+#: `stopped → starting → running → failing → stopped`（方案 §2 的状态机表）。
+PLUGIN_STATUSES = ("stopped", "starting", "running", "failing")
+PLUGIN_LOG_LEVELS = ("info", "warning", "error")
 
 
 class Base(DeclarativeBase):
@@ -470,3 +476,144 @@ class SampleSummary(Base):
     last_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
+
+
+class PluginRegistry(Base):
+    """一支**内置**插件的登记行。这不是"装了什么第三方插件"——方案 §11 明写不做动态代码加载。
+
+    行由 `services/registry.py` 在启动时按代码里的注册表同步：代码里有而库里没有的插进来
+    （`enabled=0`），库里没有对应实现的原样留着并记一条 log。**用户能改的只有五样**：
+    `enabled` / `scope` / `scope_id` / `queue_limit` / `config_json`；`name`/`version`/`summary`
+    由代码那一份覆写，因为页面上"插件叫什么、第几版"必须是可追责的、不是可编辑的。
+    """
+
+    __tablename__ = "plugin_registry"
+
+    plugin_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+    #: 整套 S7 的回滚判据就是"全部 `enabled=0` 即等效不存在"，所以默认必须是 0。
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
+    #: `scope` 不是 `global` 时它指向哪一行，由 `scope` 决定是 site/relay/gateway 哪张表——
+    #: 所以这里**不能建外键**（多态指向），校验只能落在服务层：`scope_id` 必须真实存在，
+    #: 且必须落在 `scope` 那一档上（拿 relay 的 id 当 site 用要直接 422，不许静默按全局跑）。
+    scope_id: Mapped[int | None] = mapped_column(Integer)
+    #: NULL = 跟随全局键 `plugin_queue_limit`；写数字 = 这一支插件自己的上限。
+    queue_limit: Mapped[int | None] = mapped_column(Integer)
+    config_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class PluginState(Base):
+    """一支插件**当前**的运行态：一行一支，主键就是插件 id（不是自增 id——状态是幂等 upsert 的）。
+
+    计数器全部 `nullable=False` 且默认 0：`/api/health` 的 `problems` 与插件页都直接读这些数，
+    而"读不到"和"是 0"是两件事。留 NULL 会诱导读侧写 `or 0` 之类的兜底，那正好把"这一列根本没被
+    写过"这种真故障掩掉（同 `SignalEvent.value` 不写 0 的理由）。
+    """
+
+    __tablename__ = "plugin_state"
+
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_registry.plugin_id", ondelete="RESTRICT"), primary_key=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="stopped")
+    #: 最近一次真正进入 `running` 的时刻。停用的插件保留旧值不清空——"上次跑到什么时候"
+    #: 是排查的一部分，清了它就只剩"现在是 stopped"这一句废话。
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_tick_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: 退避重启的下一个可尝试时刻。supervisor 每轮先看它，没到点就不重启，
+    #: 这样"崩溃—重启"的频率由这一列控制，而不是靠 sleep 常数散在各处。
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    restarts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    produced: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 各网关队列丢的最旧批次数之和（明细在 `stats_json`）。
+    dropped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    #: 每 (插件, 网关) 一条队列的 `{depth, peak, dropped, limit}` 快照，形状与
+    #: `GatewayQueue.stats()` 同构；"A 场地打满不吃 B 场地配额"这条判据就看这里。
+    stats_json: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class PluginLog(Base):
+    """插件的状态跃迁与错误流水。**只记事件，不记逐帧日志**——每帧一条的话，这支插件本身就是
+    新的写放大源（R11 在 SD 卡上的老问题），而那正是它要防的事。
+    """
+
+    __tablename__ = "plugin_log"
+    __table_args__ = (Index("ix_plugin_log_plugin_ts", "plugin_id", "ts"),)
+
+    log_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_registry.plugin_id", ondelete="RESTRICT"), nullable=False
+    )
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    level: Mapped[str] = mapped_column(String(8), nullable=False, default="info")
+    #: 机器可分支的事件码（`enabled`/`started`/`crashed`/`restarting`/`backoff_exhausted`…）。
+    #: `message` 给人看，`event` 给断言与页面图标用——只靠 message Substring 匹配的测试会随
+    #: 措辞改动一起失效，所以两者都要有。
+    event: Mapped[str] = mapped_column(String(32), nullable=False)
+    message: Mapped[str | None] = mapped_column(Text)
+    detail_json: Mapped[str | None] = mapped_column(Text)
+
+
+class PluginFinding(Base):
+    """插件的**推导**结果，与 `signal_event`（观测事实）**分表**。
+
+    分表不是洁癖：`SignalEvent` 的 docstring 写着"写它的必须是采集层本身，不是推理"，而任务书
+    §10.5 要"人工复核与算法推测分开记录"。混在一张表里，S8 的复核页就得靠一个字段区分"这块板
+    安静了"和"这条像是干扰"——那正是它最容易看错的地方。
+
+    `evidence_json` 与 `signal_event.payload_json` 同一条纪律：禁止只留一句人话结论，规范 §10.5
+    的证据链要能点开看（关联型判定的证据是**每个越限节点自己的读数**——节点、峰值、槽位、时刻，
+    见 `interference-correlator`；它不引用别的判定的 id，因为插件只看得到交进来的那一批点）。
+    """
+
+    __tablename__ = "plugin_finding"
+    __table_args__ = (
+        # 一条索引同时服务"按场地取最近 N 条判定"与保留任务"按场地删旧行"，
+        # 理由与 `SignalEvent` 的 `ix_event_site_ts` 完全一样（每个索引都是每次写的额外页写）。
+        Index("ix_finding_site_ts", "site_id", "ts"),
+    )
+
+    finding_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: 判定**成立**的时刻，取触发它的最后一帧的观测时刻，而不是写库时刻——回放一批历史数据时
+    # 这两个值能差一小时，而页面上的时间轴必须落在观测那一侧。
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: 冗余到底：与事件表同一个理由，按场地过滤与按场地分级保留都不许穿 join。
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT"), nullable=False
+    )
+    gateway_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gateway.gateway_id", ondelete="RESTRICT")
+    )
+    node_id: Mapped[int | None] = mapped_column(
+        ForeignKey("node.node_id", ondelete="RESTRICT")
+    )
+    slot: Mapped[int | None] = mapped_column(Integer)
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_registry.plugin_id", ondelete="RESTRICT"), nullable=False
+    )
+    #: `rule:<plugin_id>@<version>`：`docs/architecture/llm-integration.md` §4 给 LLM 产物定的
+    # producer 形状，规则产物沿用同一套——页面上"这是谁说的"永远只有一个问法。
+    producer: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    metric: Mapped[str | None] = mapped_column(String(16))
+    value: Mapped[float | None] = mapped_column(Float)
+    #: 判定当时生效的那条阈值（生效值，不是内置默认）。没有它，"为什么这条会响"就只能猜。
+    threshold: Mapped[float | None] = mapped_column(Float)
+    #: 来路质量与观测同源：回放/模拟数据推出的判定必须带着 `mock`，否则一条推论会冒充实时。
+    source: Mapped[str] = mapped_column(String(8), nullable=False, default="real")
+    evidence_json: Mapped[str | None] = mapped_column(Text)

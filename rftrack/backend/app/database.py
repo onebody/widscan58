@@ -62,6 +62,23 @@ class Database:
             row = conn.execute(text("SELECT version_num FROM alembic_version")).first()
             return row[0] if row else None
 
+    def has_table(self, name: str) -> bool:
+        """库里有没有这张表。与 `schema_version()` 同一条纪律：查不到就是 False，不抛异常。
+
+        存在的理由只有一个：进程对着一个**还没迁移**的库也必须能起来回答健康状态
+        （`test_health_does_not_crash_on_an_unmigrated_database` 钉的就是这件事），所以任何
+        "启动时顺手写一行"的代码都得先问这一句，而不是等 `no such table` 把 lifespan 炸掉。
+        它刻意不看版本号——S4 已经定过调：**版本号与结构事实是两件事**。
+        """
+        with self.engine.connect() as conn:
+            return (
+                conn.execute(
+                    text("SELECT 1 FROM sqlite_master WHERE type='table' AND name=:n"),
+                    {"n": name},
+                ).first()
+                is not None
+            )
+
     def dispose(self) -> None:
         self.engine.dispose()
 
