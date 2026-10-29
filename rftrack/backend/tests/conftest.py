@@ -1,4 +1,4 @@
-"""S2 后端测试的公共夹具：每个测试一套独立库文件，走真实迁移路径建表。"""
+"""S2/S3 后端测试的公共夹具：每个测试一套独立库文件，走真实迁移路径建表。"""
 
 import os
 import sys
@@ -25,7 +25,13 @@ def db_path(tmp_path):
 
 @pytest.fixture
 def app(db_path):
-    return create_app(Settings(db_path=db_path))
+    """后台拨号循环在 HTTP 测试里默认关掉。
+
+    生产默认开着（S3 交付的就是"没人点也自己更新"），但测试里让它跑起来就会：
+    真发 HTTP、和 `client.app.state.transport` 的假应答抢同一份结果、还会在断言之前
+    改写 `dial_state`。循环本身由 `tests/test_dial_loop.py` 直接构造 coordinator 来测。
+    """
+    return create_app(Settings(db_path=db_path, dialer_enabled=False))
 
 
 @pytest.fixture

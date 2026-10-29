@@ -7,6 +7,8 @@ SQLAlchemy==2.0.47
 alembic==1.18.4
 # probe 拨 serve.mjs 的 /api/endpoints 走它；TestClient 也依赖它
 httpx==0.28.1
+# /ws/bridge/{ep} 连 serve.mjs 的 /serial?ep= 走它（uvicorn 侧的 ws 协议实现也是同一套）
+websockets==16.0
 
 # 测试
 pytest==8.4.2

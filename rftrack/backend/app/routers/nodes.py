@@ -49,15 +49,16 @@ def as_out(node: Node, relay_id: int, site_id: int) -> NodeOut:
 
 @router.get("", response_model=list[NodeOut])
 def list_nodes(
-    site_id: int | None = Query(default=None),
-    gateway_id: int | None = Query(default=None),
+    site: int | None = Query(default=None),
+    gateway: int | None = Query(default=None),
     session: Session = Depends(get_session),
 ) -> list[NodeOut]:
+    """范围参数用契约 §4 的短名（`?site=`/`?gateway=`），与 `/api/endpoints?gateway=` 同一套词。"""
     query = _query()
-    if gateway_id is not None:
-        query = query.where(Node.gateway_id == gateway_id)
-    if site_id is not None:
-        query = query.where(Relay.site_id == site_id)
+    if gateway is not None:
+        query = query.where(Node.gateway_id == gateway)
+    if site is not None:
+        query = query.where(Relay.site_id == site)
     return [as_out(*row) for row in session.execute(query)]
 
 

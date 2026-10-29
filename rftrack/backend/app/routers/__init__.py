@@ -1,3 +1,3 @@
-from . import gateways, health, nodes, relays, sites
+from . import bridge, gateways, health, nodes, relays, sites
 
-__all__ = ["gateways", "health", "nodes", "relays", "sites"]
+__all__ = ["bridge", "gateways", "health", "nodes", "relays", "sites"]

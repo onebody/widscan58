@@ -1,6 +1,8 @@
 """`GET /api/health`：版本可比对（R20）、instance_role 兜底、各接入机拨号态如实呈现。
 
 未迁移或落后版本的库必须回 `degraded` + 一条可读的 `problems`，而不是崩溃或装作正常。
+`dialer` 一节在 S3 之后来自 `DialCoordinator.status()` 的真实内存状态：没在跑就报没在跑，
+没启用就报没启用——这一节是运营者判断"节点表为什么不更新"的第一入口。
 """
 
 from __future__ import annotations
@@ -12,19 +14,10 @@ from sqlalchemy.orm import Session
 
 from .. import APP_VERSION
 from ..deps import get_session
-from ..models import AppConfig, Gateway
+from ..models import Gateway
+from ..services.instance import effective_instance_role
 
 router = APIRouter(tags=["health"])
-
-
-def effective_instance_role(session: Session, fallback: str) -> str:
-    """缺行、值为 NULL、表都还没建，三种情况一律按 fallback（默认 site）走。"""
-    try:
-        stored = session.scalar(select(AppConfig.instance_role).where(AppConfig.id == 1))
-    except OperationalError:
-        session.rollback()
-        return fallback
-    return stored or fallback
 
 
 def gateway_counts(session: Session) -> dict | None:
@@ -70,6 +63,10 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
     if gateways is None:
         problems.append("gateway 表不可读：接入机数量无法统计")
 
+    dialer = request.app.state.dialer.status()
+    if dialer["problem"]:
+        problems.append(dialer["problem"])
+
     return {
         "status": "ok" if not problems else "degraded",
         "problems": problems,
@@ -81,6 +78,8 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         ),
         "db_path": str(db.path),
         "gateways": gateways,
-        # S2 没有拨号器：如实报未运行，不得画成"已连接"。
-        "dialer": {"running": False},
+        "dialer": dialer,
+        # `/ws/bridge` 的实时占用：谁在看哪块板、写权在谁手上。没人在连也要说得出口
+        # （`sessions: []`）——"这张表还没做"和"现在确实没页在连"是两个不同的结论。
+        "bridge": request.app.state.bridge.status(),
     }

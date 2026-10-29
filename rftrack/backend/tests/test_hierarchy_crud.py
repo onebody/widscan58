@@ -171,7 +171,7 @@ def test_relays_filter_by_site(client):
     second = make_site(client, slug="site-b")
     make_relay(client, first["site_id"], "看台")
     make_relay(client, second["site_id"], "起点塔")
-    listed = client.get(f"/api/relays?site_id={first['site_id']}").json()
+    listed = client.get(f"/api/relays?site={first['site_id']}").json()
     assert [r["name"] for r in listed] == ["看台"]
     assert listed[0]["site_id"] == first["site_id"]
 
@@ -247,7 +247,7 @@ def test_gateway_carries_its_derived_site_and_relay(client):
     assert fetched["site_id"] == site["site_id"]
     assert fetched["relay_name"] == "计时区"
     assert fetched["dial_state"] is None  # 没拨过就是没拨过，不得显示成"离线"
-    listed = client.get(f"/api/gateways?site_id={site['site_id']}").json()
+    listed = client.get(f"/api/gateways?site={site['site_id']}").json()
     assert [g["gateway_id"] for g in listed] == [gateway["gateway_id"]]
 
 

@@ -25,12 +25,11 @@ def get_relay(session: Session, relay_id: int) -> Relay:
 
 
 @router.get("", response_model=list[RelayOut])
-def list_relays(
-    site_id: int | None = None, session: Session = Depends(get_session)
-) -> list[Relay]:
+def list_relays(site: int | None = None, session: Session = Depends(get_session)) -> list[Relay]:
+    """`?site=` 与 nodes/endpoints 同一套短名（契约 §4）。"""
     query = select(Relay).order_by(Relay.relay_id)
-    if site_id is not None:
-        query = query.where(Relay.site_id == site_id)
+    if site is not None:
+        query = query.where(Relay.site_id == site)
     return list(session.scalars(query))
 
 

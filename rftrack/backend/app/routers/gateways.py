@@ -36,16 +36,17 @@ def as_out(gateway: Gateway) -> GatewayOut:
 
 @router.get("", response_model=list[GatewayOut])
 def list_gateways(
-    relay_id: int | None = None,
-    site_id: int | None = None,
+    relay: int | None = None,
+    site: int | None = None,
     session: Session = Depends(get_session),
 ) -> list[GatewayOut]:
+    """`?relay=` / `?site=` 都是范围参数，短名与 nodes/endpoints 一致。"""
     query = select(Gateway).order_by(Gateway.gateway_id)
-    if relay_id is not None:
-        query = query.where(Gateway.relay_id == relay_id)
-    if site_id is not None:
+    if relay is not None:
+        query = query.where(Gateway.relay_id == relay)
+    if site is not None:
         query = query.join(Relay, Gateway.relay_id == Relay.relay_id).where(
-            Relay.site_id == site_id
+            Relay.site_id == site
         )
     return [as_out(gateway) for gateway in session.scalars(query)]
 

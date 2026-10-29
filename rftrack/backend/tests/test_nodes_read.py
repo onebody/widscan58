@@ -76,7 +76,7 @@ def test_filtering_by_site_returns_only_that_site(chain, client):
     chain["add"]("起点塔", 1, "主场的板", "usb-native", "/dev/a")
     chain["add"]("计时区", 2, "客场的板", "usb-native", "/dev/b")
     home_id = chain["sites"]["home"]["site_id"]
-    listed = client.get(f"/api/nodes?site_id={home_id}").json()
+    listed = client.get(f"/api/nodes?site={home_id}").json()
     assert [n["node_id"] for n in listed] == [1]
     assert {n["site_id"] for n in listed} == {home_id}
 
@@ -85,7 +85,7 @@ def test_filtering_by_gateway(chain, client):
     chain["add"]("起点塔", 1, "a", "usb-native", "/dev/a")
     chain["add"]("看台", 2, "b", "usb-native", "/dev/b")
     gw_id = chain["gateways"]["看台"]["gateway_id"]
-    listed = client.get(f"/api/nodes?gateway_id={gw_id}").json()
+    listed = client.get(f"/api/nodes?gateway={gw_id}").json()
     assert [n["display_name"] for n in listed] == ["b"]
 
 
