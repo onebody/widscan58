@@ -7,7 +7,7 @@
 
 ## 1. 基线与本机环境
 
-技术栈基线取自 `/Users/fcj/.qoder-cn/skills/fastapi-vue-fullstack-dev/SKILL.md`：FastAPI + SQLAlchemy + Pydantic / SQLite(WAL) + Alembic / Vue3 CDN 无构建 / Docker + Nginx 子路径反代 / 自签 JWT。
+技术栈基线取自 `~/.qoder-cn/skills/fastapi-vue-fullstack-dev/SKILL.md`：FastAPI + SQLAlchemy + Pydantic / SQLite(WAL) + Alembic / Vue3 CDN 无构建 / Docker + Nginx 子路径反代 / 自签 JWT。
 
 本机实测（`python3 -c import`）：**[已由本机实测]**
 

@@ -479,7 +479,7 @@ bool gpio_out_allowed(unsigned n) {
 - [ ] **Step 6: 编译两个目标**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 pio run -e esp32c5
 pio run -e esp32s3
 ```
@@ -489,7 +489,7 @@ Expected: 两次 `SUCCESS`。若链接报 `RF dump bank overlaps BSS`，说明�
 - [ ] **Step 7: 提交**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo
+cd ~/workspace/FPV_space/widscan58-clone/repo
 git add firmware/src/proto/link.c firmware/src/proto/link.h \
         firmware/src/proto/uart_link.c firmware/src/proto/uart_link.h \
         firmware/src/CMakeLists.txt firmware/src/gpio_out.c
@@ -697,7 +697,7 @@ void rh_poll(int64_t now_us) {
 - [ ] **Step 7: 编译**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 pio run -e esp32c5
 ```
 
@@ -706,7 +706,7 @@ Expected: `SUCCESS`。
 - [ ] **Step 8: 提交**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo
+cd ~/workspace/FPV_space/widscan58-clone/repo
 git add firmware/src/proto/rh.c firmware/src/proto/rh.h firmware/src/proto/commands.c
 git diff --cached --stat
 git commit -m "$(cat <<'EOF'
@@ -817,7 +817,7 @@ typedef struct {
 - [ ] **Step 3: 确认帧仍在 USB**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 grep -n "link_frame\|link_frame_wait" src/scan/scanner.c
 ```
 
@@ -827,7 +827,7 @@ Expected: 4 处（SPECTRUM、LEVELS、METRICS、TELEMETRY、RAWIQ），都不带
 
 ```bash
 pio run -e esp32c5
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo
+cd ~/workspace/FPV_space/widscan58-clone/repo
 git add firmware/src/scan/scanner.c firmware/src/scan/scanner.h
 git diff --cached --stat
 git commit -m "$(cat <<'EOF'
@@ -885,7 +885,7 @@ static bool reply_printf(const char *fmt, ...) {
 - [ ] **Step 2: 把本文件里的回复改成 `reply_text` / `reply_printf`**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 sed -i '' 's/\blink_text(/reply_text(/g; s/\blink_printf(/reply_printf(/g' src/proto/commands.c
 grep -n "link_text(\|link_printf(" src/proto/commands.c
 ```
@@ -1076,7 +1076,7 @@ void commands_task_start(void) {
 - [ ] **Step 7: 编译**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 pio run -e esp32c5
 pio run -e esp32s3
 ```
@@ -1096,7 +1096,7 @@ Expected: 第一行 > 60；第二行无输出；第三行是 `rh_rx(sink, RH_REV
 - [ ] **Step 9: 提交**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo
+cd ~/workspace/FPV_space/widscan58-clone/repo
 git add firmware/src/proto/commands.c
 git diff --cached --stat
 git commit -m "$(cat <<'EOF'
@@ -1236,7 +1236,7 @@ GPIO 命令表格行里的：
 - [ ] **Step 3: 提交**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo
+cd ~/workspace/FPV_space/widscan58-clone/repo
 git add docs/RotorHazard.md CLAUDE.md
 git diff --cached --stat
 git commit -m "$(cat <<'EOF'
@@ -1260,7 +1260,7 @@ Expected: 2 个文件。
 - [ ] **Step 1: 两个目标编译 + 主机测试**
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 pio run -e esp32c5
 pio run -e esp32s3
 pio test -e native
@@ -1273,7 +1273,7 @@ Expected: `SUCCESS` / `SUCCESS` / 所有测试通过。
 关闭网页端、Chrome、其它占用串口的进程（本机已知 Chrome 会占住 `/dev/ttyACM0`），然后：
 
 ```bash
-cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo/firmware
+cd ~/workspace/FPV_space/widscan58-clone/repo/firmware
 pio run -e esp32c5 -t upload
 cd ..
 python3 tools/rh_check.py -p /dev/ttyACM0 --seats 8
