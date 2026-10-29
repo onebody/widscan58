@@ -1,17 +1,19 @@
 """工作台布局与组件实例的 HTTP 入口（契约 §4 的 `layouts` / `widgets` 两行）。
 
 `?site=` 在列表上是**必填**的：多场地定案后"把所有布局混在一起列"没有对应的界面，
-而少了这个参数就等于让 A 场地的运营者看见并可能改动 B 场地的布局。
+而少了这个参数就等于让 A 场地的运营者看见并可能改动 B 场地的布局。缺参回的是
+`{"reason": "site_required", …}` 而不是 FastAPI 默认的校验数组——S5 前端第一次真调它
+时才暴露出这个形状破口（方案 §4 申报④），页面不该为这一个端点写特例。
 
 规则都在 `services/layouts.py`，这里只做参数校验、编排与状态码。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Request, Response, status
 from sqlalchemy.orm import Session
 
-from ..deps import get_session, require_writable_session
+from ..deps import get_session, require_site_param, require_writable_session
 from ..schemas import (
     LayoutClone,
     LayoutCreate,
@@ -27,7 +29,8 @@ router = APIRouter(prefix="/api/layouts", tags=["layouts"])
 
 @router.get("", response_model=list[LayoutOut])
 def list_layouts(
-    site: int = Query(...), session: Session = Depends(get_session)
+    site: int = Depends(require_site_param),
+    session: Session = Depends(get_session),
 ) -> list[LayoutOut]:
     return layouts.list_for_site(session, site)
 

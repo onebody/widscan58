@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- RF Track 工作台壳。Vue3 CDN 无构建（用户 2026-10-28 拍板的前端形态）。
+
+   三件事在这张页面里是硬要求，改动前先看清楚再动手：
+   1. **一切本地引用都用相对路径 `./`**。页面可能被挂在任意子路径下（`/workbench/`、
+      反代之后的 `/rftrack/workbench/`），写死 `/app.js` 就换一台机器就白屏。
+   2. **Vue 有三个来源，最后一个是本仓库里的副本**。局域网部署不许依赖外网：
+      CDN 都不通时页面照样得起（`./vendor/`），而 CDN 那两条带 SRI——
+      校验和不符的第三方产物不会因为它"能加载"就敢在自己的 origin 上跑。
+   3. **未加载成功时必须说清失败在哪一步**，白屏加浏览器控制台不算错误状态。
+-->
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RF Track 工作台</title>
+<link rel="stylesheet" href="./styles.css?v=20261029">
+</head>
+<body>
+<div id="app">
+  <div class="boot-state" id="boot">
+    <h1>RF Track 工作台</h1>
+    <p id="boot-line">正在加载界面引擎……</p>
+    <ul id="boot-sources"></ul>
+  </div>
+</div>
+<script>
+(() => {
+  const VERSION = "3.5.13";
+  // 三个镜像的产物字节一致（2026-10-29 本机分别取回并比过 sha256 = c459ba7c…），
+  // 所以同一条 SRI 对前两条都成立；本地副本不写 integrity——同源文件改了就重新算，
+  // 写死一条只会让下一次正常更新变成"加载失败"。
+  const SOURCES = [
+    { url: "https://cdn.jsdelivr.net/npm/vue@" + VERSION + "/dist/vue.global.prod.js", sri: true },
+    { url: "https://registry.npmmirror.com/vue/" + VERSION + "/files/dist/vue.global.prod.js", sri: true },
+    { url: "./vendor/vue.global.prod.js", sri: false },
+  ];
+  const SRI = "sha384-W/1Fp/LgAYO/oTn9Gs+PbeWuMuq1eQCnUMPCeg8POmMYchhzxctjEqtbiCIxDOON";
+  const line = (text) => { const el = document.getElementById("boot-line"); if (el) el.textContent = text; };
+  const note = (text) => {
+    const ul = document.getElementById("boot-sources");
+    if (ul) { const li = document.createElement("li"); li.textContent = text; ul.appendChild(li); }
+  };
+
+  function bootModule() {
+    import("./app.js?v=20261029")
+      .then((mod) => mod.mount(document.getElementById("app")))
+      .catch((error) => {
+        document.documentElement.dataset.bootError = "app";
+        line("工作台脚本加载失败：" + (error && error.message ? error.message : error));
+        note("检查 " + location.pathname.replace(/\/[^/]*$/, "") + "/app.js 是否随本次发布一起部署");
+      });
+  }
+
+  function loadFrom(index) {
+    if (index >= SOURCES.length) {
+      document.documentElement.dataset.bootError = "vue";
+      line("界面引擎三个来源都没加载成功：CDN 不通且 " + "./vendor/vue.global.prod.js" + " 缺失。");
+      note("本部署应当自带 vendor 副本（局域网设备可能永远出不了内网）");
+      return;
+    }
+    const source = SOURCES[index];
+    const script = document.createElement("script");
+    script.src = source.url;
+    if (source.sri) { script.integrity = SRI; script.crossOrigin = "anonymous"; }
+    script.onload = () => { note("界面引擎：" + shorten(source.url) + " ✓"); bootModule(); };
+    script.onerror = () => { note("界面引擎不可用：" + shorten(source.url) + "，换下一个来源"); loadFrom(index + 1); };
+    document.head.appendChild(script);
+  }
+
+  const shorten = (url) => (url.length > 58 ? "…" + url.slice(-40) : url);
+  loadFrom(0);
+})();
+</script>
+</body>
+</html>

@@ -103,4 +103,7 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         # `/ws/bridge` 的实时占用：谁在看哪块板、写权在谁手上。没人在连也要说得出口
         # （`sessions: []`）——"这张表还没做"和"现在确实没页在连"是两个不同的结论。
         "bridge": request.app.state.bridge.status(),
+        # 页面挂没挂。工作台是可选件，所以这一节只呈现事实、不参与 `status` 判定：
+        # 把"这台只提供 API"报成 degraded，运营者就会开始忽略 degraded。
+        "workbench": request.app.state.workbench,
     }

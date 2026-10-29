@@ -9,6 +9,9 @@ from typing import Mapping
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = BACKEND_DIR / "data" / "rftrack.sqlite3"
+#: 工作台是同源静态目录（不起 CORS、也不给页面第二个入口）。
+#: 相对 `backend/` 定位而不是相对 cwd：uvicorn 从哪儿起都不影响页面能不能打开。
+DEFAULT_WORKBENCH_DIR = BACKEND_DIR.parent / "frontend" / "workbench"
 
 #: 汇聚实例只做只读拉取，不接受本地拨号（见 docs/rf-track/ 落地方案 §5）。
 INSTANCE_ROLES = ("site", "aggregator")
@@ -17,6 +20,17 @@ INSTANCE_ROLES = ("site", "aggregator")
 def _optional_int(value: str | None) -> int | None:
     """空串与未设置是同一件事："没有指定当前场地"，不得变成 0。"""
     return int(value) if value not in (None, "") else None
+
+
+def _optional_path(value: str | None, default: Path) -> Path | None:
+    """路径位上「未设置」与「设成空串」是**两种不同**的意图，不像 `_optional_int`。
+
+    未设置 → 用仓库里的默认目录；空串 → 明确不要这个目录（只跑 API）。把它折叠成
+    "都算默认"就等于让 `RFTRACK_WORKBENCH_DIR=` 变成一个什么都没发生的配置。
+    """
+    if value is None:
+        return default
+    return Path(value) if value else None
 
 
 #: 布尔开关的取值只认这几个写法；其余一律报错，不"看起来像真就当真"。
@@ -88,9 +102,15 @@ class Settings:
     #: 组件刷新的下限（毫秒）。这是 UI/渲染预算不是实测值：低于它，一屏 24 个组件
     #: 就把主线程变成刷屏，而帧本来就只按桥的节拍来（默认 200 = 5 fps）。
     refresh_ms_floor: int = 200
+    #: 工作台静态目录。S5 起由后端同源挂在 `/workbench/`；`RFTRACK_WORKBENCH_DIR=` 
+    #: （空串）= 这台实例只提供 API，页面另说——那时 `/api/health` 的 `workbench` 一节
+    #: 如实回 `mounted=false`，不让运营者对着 404 猜是哪一步没做。
+    workbench_dir: Path | None = DEFAULT_WORKBENCH_DIR
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
+        if self.workbench_dir is not None:
+            object.__setattr__(self, "workbench_dir", Path(self.workbench_dir))
         if self.instance_role not in INSTANCE_ROLES:
             raise ValueError(
                 f"instance_role 只能是 {INSTANCE_ROLES} 之一，收到 {self.instance_role!r}"
@@ -143,6 +163,9 @@ class Settings:
                 source.get("RFTRACK_RAWIQ_PERSIST", "0"), "RFTRACK_RAWIQ_PERSIST"
             ),
             refresh_ms_floor=int(source.get("RFTRACK_REFRESH_MS_FLOOR", "200")),
+            workbench_dir=_optional_path(
+                source.get("RFTRACK_WORKBENCH_DIR"), DEFAULT_WORKBENCH_DIR
+            ),
         )
 
     @property

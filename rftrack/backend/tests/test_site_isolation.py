@@ -164,7 +164,17 @@ def test_layouts_are_only_listed_and_switched_within_their_own_site(rig):
         assert all(row["site_id"] == rig.sites[which]["site_id"] for row in rows)
 
     # 没带 `?site=` 就是"把两个场地的布局混在一起"：接口不给这个口子。
-    assert rig.client.get("/api/layouts").status_code == 422
+    response = rig.client.get("/api/layouts")
+    assert response.status_code == 422
+    # S5 收口：形状必须是全站那一套 `{"reason": …}`。FastAPI 默认的校验数组在这里
+    # 一样能拦住缺参，但页面就得为这一个端点写特例——那正是它出错的开始。
+    assert response.json() == {
+        "detail": {
+            "reason": "site_required",
+            "param": "site",
+            "hint": "缺少查询参数 ?site=：布局按场地隔离，不跨场地列",
+        }
+    }
 
 
 def test_switching_the_active_layout_in_a_leaves_bs_active_alone(rig):
@@ -178,6 +188,30 @@ def test_switching_the_active_layout_in_a_leaves_bs_active_alone(rig):
     assert sorted(row["name"] for row in a_rows if row["is_active"]) == ["A场 决赛台"]
     b_rows = rig.client.get("/api/layouts", params={"site": rig.sites["B"]["site_id"]}).json()
     assert sorted(row["name"] for row in b_rows if row["is_active"]) == ["B台"]
+
+
+def test_switching_back_to_an_older_layout_clears_the_active_one_first(rig):
+    """切回"id 比当前激活项小"的那一份，也必须切得动。
+
+    上一条评论的切换走的是反方向（新建的副本 id 更大），所以它一直是绿的：清旧与置新在
+    同一次 flush 里，两条 ORM UPDATE 的先后**由主键决定**，而 SQLite 的部分唯一索引
+    `uq_layout_active_site` 按语句即时校验。主键大的那条先被置 False、主键小的那条后置 True
+    才碰巧没事；反过来就先撞成 `IntegrityError`，再被翻成 409 `active_layout_conflict`。
+    真实页面天天在撞它：另存为之后切回原布局（S5 冒烟实测 409）。
+    """
+    first_id = rig.layouts["A"]  # 建场时就激活的那一份，id 最小
+    newer = rig.client.post(
+        "/api/layouts", json={"site_id": rig.sites["A"]["site_id"], "name": "A场 后建的"}
+    ).json()
+    assert rig.client.post(f"/api/layouts/{newer['layout_id']}/activate").status_code == 200
+
+    back = rig.client.post(f"/api/layouts/{first_id}/activate")
+    assert back.status_code == 200, back.json()
+    assert back.json()["is_active"] is True
+
+    a_rows = rig.client.get("/api/layouts", params={"site": rig.sites["A"]["site_id"]}).json()
+    assert [row["name"] for row in a_rows if row["is_active"]] == ["A台"]
+    assert next(row for row in a_rows if row["name"] == "A场 后建的")["is_active"] is False
 
 
 def test_a_layout_cannot_bind_a_relay_that_belongs_to_another_site(rig):

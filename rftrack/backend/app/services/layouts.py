@@ -4,7 +4,8 @@
 
 1. **布局永远属于一个场地**。`?site=` 是筛选口径，不是权限口子——所有读回来的东西都能
    追到自己的 `site_id`，A 场地的布局永不出现在 B 场地的列表里。
-2. **`is_active` 每场地唯一**。切换 = 同一事务里清旧设新；库里那条部分唯一索引只是
+2. **`is_active` 每场地唯一**。切换 = 同一事务里**先发一条清旧的 UPDATE、再把目标置 True**
+   （顺序反过来就会撞唯一索引，理由见 `activate_layout`）；库里那条部分唯一索引只是
    并发下的兜底，不是"先撞了再说"的常规路径。
 3. **结构版本比这份代码认识的高 → 降级读、拒绝写**。不 500，也不"顺手把版本号改回来"
    ——那等于把用户精心摆好的格子按我们看不懂的语义重写一遍。
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..config import Settings
@@ -228,17 +229,24 @@ def clone_layout(
 
 
 def activate_layout(session: Session, layout: WorkbenchLayout) -> WorkbenchLayout:
-    """切换当前布局：只清同场地的旧激活项，别的场地的"当前布局"一根手指都不碰。"""
+    """切换当前布局：只清同场地的旧激活项，别的场地的"当前布局"一根手指都不碰。
+
+    "清旧"必须是一条**先发出去的 UPDATE 语句**，不能只是把旧 ORM 对象改成 False 再一起
+    flush：同一次 flush 里两条 ORM UPDATE 的先后由主键决定，而 SQLite 的部分唯一索引
+    `uq_layout_active_site` 按语句即时校验——目标主键比旧激活项小，就会先置新、后清旧，
+    撞成 `IntegrityError` 再翻成 409（页面表现为"切回原布局切不动"）。
+    """
     ensure_writable(layout)
-    rival = session.scalar(
-        select(WorkbenchLayout).where(
+    session.execute(
+        update(WorkbenchLayout)
+        .where(
             WorkbenchLayout.site_id == layout.site_id,
             WorkbenchLayout.is_active.is_(True),
             WorkbenchLayout.layout_id != layout.layout_id,
         )
+        .values(is_active=False)
+        .execution_options(synchronize_session="fetch")
     )
-    if rival is not None:
-        rival.is_active = False
     layout.is_active = True
     # 两个请求同时抢"当前布局"时，部分唯一索引只会放过一个：翻成 409，别回 500。
     flush_or_conflict(session, "active_layout_conflict", site_id=layout.site_id)
