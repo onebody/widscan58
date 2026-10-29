@@ -2,6 +2,7 @@
 
 层级：site 场地 → relay 中继（物理位置）→ gateway 接入机 → node 节点。
 节点上不存 site_id：场地与位置一律经 gateway → relay → site 推导，避免三处双写不一致。
+例外是 S6 那两张只追加的观测表——它们按"每一次查询都不 join"设计，冗余列由采集层写一次。
 时间一律 aware UTC，禁止 naive/aware 混用。
 """
 
@@ -12,9 +13,11 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
@@ -25,6 +28,28 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def to_utc(value: datetime | None) -> datetime | None:
+    """把"从库里读回来的 naive"或"别的时区"统一成 aware UTC。
+
+    这个函数存在的理由是一条**实测事实**（`tests/test_retention.py` 钉住它）：SQLite 方言的
+    `DATETIME(timezone=True)` 写进去的是**不带偏移的字符串**，而且它不做换算——
+    `20:00+08:00` 落成 `'… 20:00:00'`，读回来是 naive 的 20:00。也就是说：
+
+    - 读侧拿到的 naive 值**就是 UTC 墙上时间**，必须重新贴上 UTC 才能和 `utcnow()` 比；
+    - 写侧传一个非 UTC 的 aware 时间进去，会被当成它自己的墙上时间存错 8 小时。
+
+    所以任何跨这条边界的时刻都先过这里，而不是在各个 service 里各写一遍 `replace`。
+    naive 一律按 UTC 解释（我们的列只由 `utcnow()` 写过）；认不出来的类型不猜，抛出去。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise TypeError(f"期望 datetime，收到 {type(value).__name__}")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 SITE_STATUSES = ("active", "archived")
@@ -320,3 +345,128 @@ class LocalSettingsImport(Base):
     unmapped_json: Mapped[str | None] = mapped_column(Text)
     #: 回滚只记时刻，不删行：留痕被改没了，下一次就无从对照。
     reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --- S6：采样摘要与信号事件 ---------------------------------------------------
+
+#: 来源词表说的是**这串字节从哪儿来的**，不是数据新不新鲜。
+#: `real` = 此刻接在桥上的板子发出来的；`mock` = 解析了但来源是回放/注入（含本仓库的合成
+#: 录制）。第三个词 `demo` 属于页面自己的演示数，**不进这张表**——写进来就等于把演示数存成观测量。
+#: AI 文本另立 `llm_note`，不进这里（草案 §5 与 llm-integration.md 的同一口径）。
+EVENT_SOURCES = ("real", "mock")
+
+#: 事件 `kind` 的词表**刻意不加 CHECK 约束**：S7 的三个插件与 S8 的告警都会往这里加条目，
+#: 每认一种就要改一次表结构，而那正是"迁移债"。认识的 kinds 只影响渲染与文档，
+#: 不认识的原样存——把对端/算法报的词改成我们猜的近义词，等于擦掉排查线索。
+CAPTURED_EVENT_KINDS = ("node_offline", "node_online")
+
+#: 摘要行的两个派生量。`ema_*` 可空不是"忘了写"：`LEVELS` 帧的 RSSI 模式确实不测 EMA
+#: （`frame_parser.parse_levels` 回 `rssiEma: None`），那一格必须是 NULL，不能是 0。
+SUMMARY_SERIES = ("rssi", "ema")
+
+
+class SignalEvent(Base):
+    """一条**观测事实**。写它的必须是采集层本身，不是推理——推理结果属 S7/S8 的表。
+
+    `site_id` 与 `gateway_id` 是**故意的冗余列**（草案 §5 / 方案 §3）：按场地过滤事件流、
+    按场地分级保留、按场地归档这三件事都要 `WHERE site_id=…`，穿三表 join 去推导场地
+    在 Pi 的 SD 卡上不叫查询，叫自残。写入时由采集层从 `gateway → relay → site` 解析一次，
+    推导链与 `routers/nodes.py` 用的是同一条。
+    """
+
+    __tablename__ = "signal_event"
+    __table_args__ = (
+        # 一条索引服务两件事：事件流按 `(site_id, ts)` 取最近 N 条，保留任务按
+        # `(site_id, ts < 界限)` 逐场地删。第二件事走同一个索引的前缀，不必再建一条——
+        # 每个索引都是每次写的额外页写，这是 R11 上直接可见的成本。
+        Index("ix_event_site_ts", "site_id", "ts"),
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT"), nullable=False
+    )
+    gateway_id: Mapped[int] = mapped_column(
+        ForeignKey("gateway.gateway_id", ondelete="RESTRICT"), nullable=False
+    )
+    #: 可空是给"没有具体节点也值得记一条"留的位置（整台接入机判死）。
+    #: S6 的采集层每条都带 node，所以这里不会真的为空——但约束不该挡住 S7 的事实。
+    node_id: Mapped[int | None] = mapped_column(
+        ForeignKey("node.node_id", ondelete="RESTRICT")
+    )
+    slot: Mapped[int | None] = mapped_column(Integer)
+    #: 与 `channel_plan_item.freq_khz` 同一个量纲（kHz 整数），页面上不出现第二种写法。
+    freq_khz: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 事件说的那一个量：`rssi` / `ema` / `snr`。`kind` 说发生了什么，`metric` 说从哪个量看出来的。
+    metric: Mapped[str | None] = mapped_column(String(16))
+    #: 触发这条读数的那个值，单位随 `metric` 走（dBFS）。没有数值的事件（状态跃迁）为 NULL，
+    #: 不写 0——0 dBFS 是"满量程"，是一个很强的假话。
+    value: Mapped[float | None] = mapped_column(Float)
+    #: 读数的来路质量标记（如 `saturated`、`partial`）。S6 不写它：目前没有可断言的来源，
+    #: 空着比造一个"看起来正常"强。
+    quality: Mapped[str | None] = mapped_column(String(16))
+    source: Mapped[str] = mapped_column(String(8), nullable=False, default="real")
+    #: 事件的全部上下文（帧里的原始字段、断流秒数、回放文件名）。禁止只留一句人话结论：
+    #: 规范 §10.5 要的是证据链，S8 的复核要点开它。
+    payload_json: Mapped[str | None] = mapped_column(Text)
+
+
+class SampleSummary(Base):
+    """采样**摘要**：唯一入库的采样形态（原始 RSSI 序列只进内存环形缓冲，不落库）。
+
+    主键就是草案里那句"唯一键 `(node_id, slot, ts_bucket)`"——**用复合主键而不是自增 id
+    加一条 UNIQUE**：同一格同一桶重写必须落在同一行上（聚合是幂等的，重放一遍不该长出新行），
+    而在 SD 卡上多一列 id、多一个索引页就是每次写多一份磨损（R11）。
+
+    `bucket_s` 记的是**写这行时生效的桶宽**。它不进主键：桶宽是全局键，改一次就会让
+    "1 秒的旧行"和"5 秒的新行"混在同一张表里，那时读侧必须说得清存的是哪几种粒度
+    （`routers/samples.py` 如实回 `bucket_widths`），而不是假装全库一种。
+    """
+
+    __tablename__ = "sample_summary"
+    __table_args__ = (
+        PrimaryKeyConstraint("node_id", "slot", "ts_bucket"),
+        # 方案 §3 的判据原文：`site_id` 过滤不得走全表扫。这一条同时是趋势取数的路径
+        # （`WHERE site_id=? AND node_id=? AND slot=? AND ts_bucket BETWEEN ? AND ?`
+        # 四个约束全在索引列上），所以不再另建 `(site_id, ts_bucket)`——理由同 `SignalEvent`。
+        Index("ix_summary_site_node_slot_bucket", "site_id", "node_id", "slot", "ts_bucket"),
+    )
+
+    node_id: Mapped[int] = mapped_column(
+        ForeignKey("node.node_id", ondelete="RESTRICT"), primary_key=True
+    )
+    #: 频道槽位（0 基），与 `Settings.slots_per_node`、`config_layer` 的 `slots` 键同一口径。
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: 桶起点的 unix 秒（UTC）：`floor(ts / bucket_s) * bucket_s`。存整数而不是 datetime，
+    # 是因为桶聚合要做整除对齐，而 SQLite 的 datetime 做不了。
+    ts_bucket: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT"), nullable=False
+    )
+    gateway_id: Mapped[int] = mapped_column(
+        ForeignKey("gateway.gateway_id", ondelete="RESTRICT"), nullable=False
+    )
+    bucket_s: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: 这一格里有多少个点：`mean` 是逐点平均还是逐桶平均，全靠这个数说话。
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: 其中**带 EMA 的**点数。它必须单独存：`LEVELS` 的 RSSI 模式一条 EMA 都不带，
+    #: 只有一个 `sample_count` 时 `ema_mean` 的分母就成了"所有点"，那是个算错了但看不出错的数。
+    ema_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rssi_mean: Mapped[float | None] = mapped_column(Float)
+    rssi_min: Mapped[float | None] = mapped_column(Float)
+    rssi_max: Mapped[float | None] = mapped_column(Float)
+    #: 桶内**最后一个**读数：趋势图连线到"现在"靠它，不是靠 `ts_bucket` 的右边界。
+    rssi_last: Mapped[float | None] = mapped_column(Float)
+    ema_mean: Mapped[float | None] = mapped_column(Float)
+    ema_min: Mapped[float | None] = mapped_column(Float)
+    ema_max: Mapped[float | None] = mapped_column(Float)
+    #: 桶内最后一个**带 EMA 的**读数（不是"最后一个点"那一格的 EMA——那一条可能压根没测）。
+    ema_last: Mapped[float | None] = mapped_column(Float)
+    #: 读数来源，与 `SignalEvent.source` 同一套词：摘要行也必须能说出"这是回放出来的"。
+    source: Mapped[str] = mapped_column(String(8), nullable=False, default="real")
+    #: 桶内最后一个点的**观测时刻**（不是桶边界）。取数侧靠它回答"这行有多新"。
+    last_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )

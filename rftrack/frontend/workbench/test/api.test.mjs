@@ -1,8 +1,11 @@
 /**
- * 调用层单测：对着假 fetch 断言**错误形状**。
+ * 调用层单测：对着假 fetch 断言**错误形状**与**URL 形状**。
  *
  * 页面是按 `reason` 分支处理的，所以这里钉的是"每个失败路径都能落成一个可分支的字符串"，
  * 而不是某句自然语言文案。文案会变，`reason` 是契约。
+ *
+ * URL 那一半同样是指令性的：查询名是后端 `Query(alias=…)` 定下来的，前端写错一个字母不会
+ * 报错，只会让筛选静默失效——那种 bug 在页面上长得和"这一档真的没数据"一模一样。
  */
 
 import assert from "node:assert/strict";
@@ -43,6 +46,52 @@ test("成功路径：GET 带查询串、空值与 undefined 不进查询", async
   const rows = await api.nodes({ site: 3, gateway: undefined });
   assert.deepEqual(rows, [{ ok: 1 }]);
   assert.deepEqual(seen[0], ["/api/nodes?site=3", "GET"]);
+});
+
+test("S6 的三个读端点：路径与查询名要和后端 routers/{samples,events}.py 对得上", async () => {
+  const seen = [];
+  const api = createApi({
+    base: "/rftrack",
+    fetchImpl: fakeFetch(async (url, init) => {
+      seen.push([url, init.method]);
+      return response({ body: { rows: [] } });
+    }),
+  });
+  // 后端的窗口上界用 alias：Python 侧叫 `start`/`end`，线上传的是 `from`/`to`。
+  // 前端跟着线上写，写错一个字母就是" filters 静默失效、拉回一整张表"。
+  await api.samplesSummary({ site: 1, node: 30, slot: 0, from: "2026-10-29T04:00:00Z", to: undefined, bucket: 1, limit: 150 });
+  assert.deepEqual(seen[0], [
+    "/rftrack/api/samples/summary?site=1&node=30&slot=0&from=2026-10-29T04%3A00%3A00Z&bucket=1&limit=150",
+    "GET",
+  ]);
+  assert.ok(seen[0][0].includes("slot=0"), "第 0 档是档位，不是「没给」——被当成空就等于查了全部档");
+
+  await api.eventsFeed({ site: 2, node: 30, kind: "signal_lost", from: "2026-10-29T04:00:00Z", limit: 50 });
+  assert.deepEqual(seen[1], [
+    "/rftrack/api/events?site=2&node=30&kind=signal_lost&from=2026-10-29T04%3A00%3A00Z&limit=50",
+    "GET",
+  ]);
+
+  // 主键读不带 site：那是"跨场地扫表"的写法，后端会把带 site 的读当成场地校验。
+  await api.eventDetail(41);
+  assert.deepEqual(seen[2], ["/rftrack/api/events/41", "GET"]);
+  await api.eventDetail(41, 2);
+  assert.deepEqual(seen[3], ["/rftrack/api/events/41?site=2", "GET"]);
+});
+
+test("读端点的空值查询参数不进 URL，也不许回落到别人的默认值", async () => {
+  const seen = [];
+  const api = createApi({
+    base: "",
+    fetchImpl: fakeFetch(async (url) => {
+      seen.push(url);
+      return response({ body: { rows: [] } });
+    }),
+  });
+  await api.samplesSummary({ site: 1, node: null, slot: undefined, from: "" });
+  assert.deepEqual(seen, ["/api/samples/summary?site=1"]);
+  await api.eventsFeed({ site: 1 });
+  assert.deepEqual(seen[1], "/api/events?site=1");
 });
 
 test("写请求带 JSON 体，204 回 null 而不是解析空响应", async () => {

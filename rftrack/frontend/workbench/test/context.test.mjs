@@ -114,7 +114,10 @@ test("状态栏逐段有话：场地/位置/接入机/板都要说清「现在�
   const api = fakeApi({ relays: [RELAY_1], gateways: [GW_ONLINE], nodes: [NODE_1] });
   const context = createContext({ api });
   await context.boot({});
-  const bar = context.statusBar({ layout: { name: "默认视图", degraded: false }, dirty: true, demo: true });
+  // "数据"那一段的正文由 `live.js` 算好交进来（来源 + 连接态 + 板数），`context` 只负责排在最后：
+  // 场地上下文不知道 WebSocket 的事，让它去拼那句话就是让两层共用一套词汇表。
+  const data = { value: "MOCK+真实 · 已连接 · 2 块板", tone: "warn" };
+  const bar = context.statusBar({ layout: { name: "默认视图", degraded: false }, dirty: true, data });
   const values = Object.fromEntries(bar.parts.map((part) => [part.label, part.value]));
   assert.equal(values["场地"], "A 号赛段");
   assert.equal(values["位置"], "起点");
@@ -122,9 +125,14 @@ test("状态栏逐段有话：场地/位置/接入机/板都要说清「现在�
   assert.equal(values["板"], "板 R1");
   assert.equal(values["布局"], "默认视图");
   assert.equal(values["改动"], "未保存");
-  assert.equal(values["数据"], "DEMO");
+  assert.equal(values["数据"], "MOCK+真实 · 已连接 · 2 块板");
+  assert.equal(bar.parts.find((part) => part.label === "数据").tone, "warn");
   assert.equal(bar.parts.some((part) => part.value === ""), false);
   assert.match(bar.text, /场地 A 号赛段 · 位置 起点 · 接入机 接入机甲 · online · 板 板 R1/);
+
+  // 没给这一段就不出现那一段：空字符串在状态栏里是一句"数据：（没有）"，比不写更难读。
+  const noData = context.statusBar({ layout: { name: "默认视图", degraded: false } });
+  assert.equal(noData.parts.some((part) => part.label === "数据"), false);
 });
 
 test("未选/没有是两句话：空库里说「还没有场地」，有库没选说「未选」", async () => {
@@ -183,9 +191,16 @@ test("切场地/切位置/切接入机一次都不碰写端点：这条判据靠
 
 test("能力只认「答过话的那一路」：没加载过层级就不声称有节点", async () => {
   const context = createContext({ api: fakeApi() });
-  assert.deepEqual(context.capabilities(), ["demo"]);
+  assert.deepEqual(context.capabilities(), [], "boot 之前一条通路都没答过话，库里就不该有任何一格是可点的");
   await context.boot({});
-  assert.deepEqual(context.capabilities().sort(), ["demo", "hierarchy", "nodes"]);
+  assert.deepEqual(context.capabilities().sort(), ["hierarchy", "live", "nodes"]);
+  // S5 那一路 `demo` 不在这里：演示数据整份删了，能力词表还留着它就是在给一个不存在的通路作保。
+  assert.equal(context.capabilities().includes("demo"), false);
+
+  // 只有场地、层级还没回话：`live` 能订上推送，但节点格要说"缺少能力：nodes"。
+  const bare = createContext({ api: fakeApi() });
+  bare.state.siteId = 1;
+  assert.deepEqual(bare.capabilities(), ["live"]);
 });
 
 // --- 视图记忆：刷新回来还是这一屏（规范 §10.1 第三条）------------------------------

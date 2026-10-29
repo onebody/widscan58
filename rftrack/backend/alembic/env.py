@@ -22,7 +22,11 @@ from app.models import Base  # noqa: E402
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers` 的默认值是 True：只要有人在本进程里跑过一次迁移，
+    # 之前 `import` 出来的每个 `rftrack.*` logger 就被静默 `disabled`，此后
+    # `LOG.info()` 连记录都不会生成。S6 的结构化保留日志正是"清理真的跑过"的唯一凭据，
+    # 所以这一句不是可选的整洁，是那条判据的前提（`tests/test_retention.py` 钉住它）。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -142,7 +142,7 @@ function makeStore(options = {}) {
     state: { siteId: options.siteId ?? 1, instanceRole: options.role ?? "site", globals: options.globals ?? { settings: {} } },
   };
   const timers = fakeTimers();
-  const store = createStore({ api, context, registry, demo: {}, timers, columns: 12 });
+  const store = createStore({ api, context, registry, timers, columns: 12 });
   return { store, api, sent, context, timers, layoutsTable, widgetTable };
 }
 

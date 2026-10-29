@@ -1,6 +1,7 @@
 /**
- * 绘图模型与落笔的单测。这里钉的是两件事：
- * **像素坐标是纯数据**（可以在 Node 里断），以及**阈值线不许被画成一条数据曲线**。
+ * 绘图模型与落笔的单测。这里钉的是三件事：
+ * **像素坐标是纯数据**（可以在 Node 里断），**阈值线不许被画成一条数据曲线**，以及
+ * **每一笔的来源跟着点走**——折线里混进回放段时，页面上的 MOCK/真实角标才不是一句空话。
  */
 
 import assert from "node:assert/strict";
@@ -8,7 +9,7 @@ import test from "node:test";
 
 import { PAD, colorsFrom, draw, frame, model, niceStep, resizeCanvas } from "../chart.js";
 
-const samples = (values) => values.map((rssi_db, tick) => ({ source: "demo", tick, at: tick * 200, rssi_db }));
+const samples = (values) => values.map((rssi_db, tick) => ({ source: "real", tick, at: tick * 200, rssi_db }));
 
 test("niceStep 只给 1/2/5×10ⁿ：沿用原 web/src/util/canvas.ts，两处刻度必须一致", () => {
   assert.equal(niceStep(40, 4), 10);
@@ -60,9 +61,19 @@ test("model：阈值是「判据」，不在 points 里", () => {
   const built = model({ samples: samples([-90, -80]), threshold: -85 });
   assert.equal(built.threshold.value, -85);
   assert.equal(built.points.some((point) => point.rssi_db === -85), false);
-  assert.equal(built.points.every((point) => point.source === "demo"), true);
   const none = model({ samples: samples([-90]) });
   assert.equal(none.threshold, null, "没设阈值就不画那条线，也不拿 −85 兜底");
+});
+
+test("model：来源逐点跟着走，不在这里塌成一个值", () => {
+  const rows = [-90, -88, -86].map((rssi_db, tick) => ({ source: tick === 0 ? "mock" : "real", tick, rssi_db }));
+  const built = model({ samples: rows, size: { w: 480, h: 180 } });
+  assert.deepEqual(built.points.map((point) => point.source), ["mock", "real", "real"]);
+  assert.equal(
+    built.points.every((point) => point.source === "real"),
+    false,
+    "折线里真有回放段：把三点统一成 real 就等于让 MOCK 冒充实时（S6 出口判据）"
+  );
 });
 
 test("model：空序列不崩，gridY 仍有刻度", () => {

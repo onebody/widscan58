@@ -304,6 +304,39 @@ def test_a_tile_cannot_escape_protection_hardware_or_resource_limits(client, sit
     assert layout_level.json()["detail"]["reason"] == "ring_capacity_exceeded"
 
 
+def test_the_slot_domain_is_zero_based_wherever_it_is_read(client, site):
+    """档位下标的合法域是 `0..slots_per_node-1`，三处读点必须给同一个答案。
+
+    为什么单独一条：`minimum` 一度在注册表里写成 **1**（把 1 基的显示"第 1 档"当成了 0 基的
+    存储下标），而写入闸 `_validate_slots` 一直接受 0。页面按复选控件渲染所以看不出来，但任何
+    按 schema 生成表单的消费方都会少给一档——这一档恰好是最常看的那一档（`planner.c:67` 填进
+    `.id` 的 plan 下标从 0 开始）。所以这里不只看写入闸，还把**声明**和**读取闸**一起对：
+    三处来自不同模块，改一处而不同步另外两处就会红。
+
+    顺带钉住一个不对称：`kind=="slots"` 的 schema `maximum` 是**数量上界（不含）**，
+    而 `int`/`float` 的 `maximum` 含进去（`config_layer.py:235` 用 `value > high`）。
+    前端 `app.js:790` 正是按"不含"渲染成 `length: high` 个复选框的，口径自洽；这里如实写下来，
+    免得下一个人把两种 kind 的 `maximum` 当成同一个语义去读。
+    """
+    schema = {row["key"]: row for row in client.get("/api/settings/schema").json()["keys"]}
+    declared = schema["slots"]
+    assert declared["minimum"] == 0, "第 0 档合法：声明成 1 就是让消费方少给一档"
+
+    count = declared["maximum"]
+    refused = client.get(f"/api/samples/summary?site={site['site_id']}&slot={count}")
+    assert refused.status_code == 422
+    detail = refused.json()["detail"]
+    assert detail["reason"] == "slot_out_of_range"
+    assert detail["maximum"] == count - 1, "读取闸的上界必须是声明的最后一个合法下标"
+
+    layout = make_layout(client, site["site_id"])
+    put_widget(client, layout["layout_id"], "A", {"slots": [0]})
+    tiles = widgets(client, layout["layout_id"])
+    assert value(tiles["A"], "slots") == [0] and source(tiles["A"], "slots") == "instance"
+    put_widget(client, layout["layout_id"], "A", {"slots": [count - 1]})
+    assert value(widgets(client, layout["layout_id"])["A"], "slots") == [count - 1]
+
+
 def test_the_aggregator_instance_refuses_every_write(db_path):
     """S4 的"权限"= 层约束（2026-10-29 裁定，token 归 S11）：汇聚实例一切写 405。"""
     writer = TestClient(create_app(Settings(db_path=db_path, dialer_enabled=False)))

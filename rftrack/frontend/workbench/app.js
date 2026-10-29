@@ -1,27 +1,30 @@
 /**
  * 工作台根实例：**只做编排**——业务判断都在 `store.js`（格子与布局）、`context.js`
- * （场地层级与状态栏）、`grid.js`（几何）、`registry.js`（组件声明）里，这个文件负责
- * 把它们接到 Vue 与真实指针事件上。
+ * （场地层级与状态栏）、`live.js`（整页一条 `/ws/live`）、`grid.js`（几何）、`registry.js`
+ * （组件声明）里，这个文件负责把它们接到 Vue 与真实指针事件上。
  *
- * 三条形态上的约束：
+ * 四条形态上的约束：
  *
  * 1. **无构建**。Vue 由 `index.html` 以脚本注入（三个来源，最后一个是仓库副本），所以这里
  *    不能 `import { h } from "vue"`；`mount()` 从 `globalThis.Vue` 取命名空间，再以 `rt`
  *    传下去。取不到就报错并停下——白屏加控制台不算错误状态。
  * 2. **store 不是响应式的**。它是纯 JS，为的是能在 Node 里被 `node --test` 断言。页面用一根
  *    `signal.tick` 计数器把"我刚改了状态"告诉 Vue：所有会改状态的动作都走 `actions.*`，
- *    那里统一 bump。组件里凡是读 store/context 的 computed 都要先读一次 `signal.tick.value`。
- * 3. **诊断入口做在产品里**（`window.rftrackWorkbench`）。"切场地到底有没有碰写端点"这种
- *    问题不该靠人盯网络面板：`api.audit()` 那份有界调用记录就摆在这里，页面底部也显示条数，
- *    e2e 与人工排查读的是同一个对象。
+ *    那里统一 bump。组件里凡是读 store/context/live 的渲染都要先读一次自己的节拍。
+ * 3. **实时数据只有一条连接，挂在场地上**。`live` 由 `boot()` 与 `actions.selectSite` 两处
+ *    决定订哪一个 `?site=`，卸载时 `close()`；它不是响应式的，所以渲染靠每一格自己的
+ *    `refresh_ms` 节拍去重读（`live.js` 文件头写了为什么帧不直接催渲染）。
+ * 4. **诊断入口做在产品里**（`window.rftrackWorkbench`）。"切场地到底有没有碰写端点"这种
+ *    问题不该靠人盯网络面板：`api.audit()` 那份有界调用记录与 `live.status()` 那份连接账
+ *    就摆在这里，页面底部显示条数，e2e 与人工排查读的是同一个对象。
  */
 
 import { createApi } from "./api.js";
 import { build as buildComponents, declaredWithoutImpl, implWithoutDeclared } from "./components/index.js";
-import { fmtClock, sourceBadge, stageNote } from "./components/parts.js";
+import { fmtClock, stageNote } from "./components/parts.js";
 import { createContext } from "./context.js";
-import { createDemoSource } from "./demo.js";
 import * as grid from "./grid.js";
+import { createLive } from "./live.js";
 import * as registry from "./registry.js";
 import { createStore } from "./store.js";
 
@@ -39,8 +42,11 @@ export function mount(el, rtOverride) {
 
   const api = createApi({ location: globalThis.location });
   const context = createContext({ api, staleAfterS: 120 });
-  const demo = createDemoSource({});
-  const store = createStore({ api, context, registry, demo, timers: globalThis });
+  // 整页一条 /ws/live：它跟着"当前场地"走，切换场地由 `actions.selectSite` 负责换订。
+  // 判过期比后端那句 `node_offline`（`capture_silence_s`，默认 5 s）晚，是有意的：页面这一侧
+  // 要覆盖"帧整体在进、只是这一拍的还没到"的抖动，而事件流已经把真断流先说出去了。
+  const live = createLive({ base: api.base, location: globalThis.location, staleAfterS: 15 });
+  const store = createStore({ api, context, registry, timers: globalThis });
   const tick = ref(0);
   const signal = { tick, bump: () => { tick.value += 1; } };
   const drag = ref(null);
@@ -67,6 +73,9 @@ export function mount(el, rtOverride) {
       // 先记下**离开前**这一场地的那一屏，再切上下文：反过来的话记进去的是上一场地的布局号。
       remember();
       await context.selectSite(id);
+      // 换订跟着 `context` 真正选中的那一个，而不是传进来的 `id`：非法 id 会被规范化成默认场地，
+      // 跟着原始参数走就会订到一个页面上根本没显示的场地。
+      live.attach(context.state.siteId);
       // 「当前布局」只有一份真相：服务端按场地各存一份 `is_active`，所以切场地天然各留各的。
       await store.loadLayouts(id);
       restoreSelection(id);
@@ -200,7 +209,7 @@ export function mount(el, rtOverride) {
     context.persist();
   }
 
-  const deps = { store, context, demo, actions, signal, registry, api };
+  const deps = { store, context, live, actions, signal, registry, api };
   const kit = buildComponents(rt, deps);
 
   // --- 几何 -------------------------------------------------------------------
@@ -449,7 +458,7 @@ export function mount(el, rtOverride) {
                   title: entry.reason || `加一块 ${entry.name}（${entry.size.w}×${entry.size.h}）`,
                 }, [
                   h("strong", entry.name),
-                  h("span", { class: "lib-src" }, entry.source === "demo" ? "DEMO" : "实时"),
+                  h("span", { class: "lib-src" }, registry.sourceWord(entry.source)),
                   h("span", { class: "lib-size" }, `${entry.size.w}×${entry.size.h}`),
                 ])
               : h("div", { class: "lib-planned" }, [
@@ -576,7 +585,17 @@ export function mount(el, rtOverride) {
         h("span", { class: "widget-title" }, definition ? definition.name : widget.plugin_id),
         widget.missing
           ? h("span", { class: "badge badge--missing" }, "未注册")
-          : sourceBadge(rt, definition.source),
+          : h(
+              "span",
+              {
+                class: ["badge", `badge--path-${definition.source}`],
+                // 头部这枚说的是**通路**（这一格设计上读哪条路），格子里那枚说的才是
+                // **此刻这份数据的来源**（真实帧 / 回放帧 / REST 读数）。两者不能共用一张词表：
+                // 拿 `sourceBadge` 画通路会把 `live` 显示成"来源未知"——通路明明是注册表里写着的。
+                title: `这一格的数据通路：${registry.sourceWord(definition.source)}（格子里那枚才是此刻这份数的来源）`,
+              },
+              registry.sourceWord(definition.source)
+            ),
         widget.isNew ? h("span", { class: "badge badge--new" }, "未保存") : null,
         dirty && !widget.isNew ? h("span", { class: "badge badge--dirty" }, "有改动") : null,
         widget.declaration_error
@@ -628,7 +647,7 @@ export function mount(el, rtOverride) {
         h("dt", "组件 id"), h("dd", h("code", widget.plugin_id)),
         h("dt", "实例 id"), h("dd", h("code", widget.instance_id)),
         h("dt", "位置"), h("dd", `${widget.x},${widget.y} · ${widget.w}×${widget.h}`),
-        h("dt", "数据源"), h("dd", definition ? (definition.source === "demo" ? "演示（DEMO）" : "后端实时") : "未知"),
+        h("dt", "数据源"), h("dd", definition ? registry.sourceWord(definition.source) : "未知"),
         h("dt", "改动"), h("dd", pending.length ? `待保存：${pending.join("、")}` : "无"),
       ]),
       h("h3", "实例层覆写"),
@@ -804,14 +823,10 @@ export function mount(el, rtOverride) {
   }
 
   function statusBar() {
-    const hasDemo = store.state.widgets.some((widget) => {
-      const definition = registry.component(widget.plugin_id);
-      return definition && definition.source === "demo";
-    });
     const bar = context.statusBar({
       layout: store.state.layout,
       dirty: dirtyCount() > 0,
-      demo: hasDemo,
+      data: { value: live.dataLabel(), tone: live.dataTone() },
     });
     const calls = api.audit();
     const blocked = store.readOnlyReason();
@@ -833,6 +848,35 @@ export function mount(el, rtOverride) {
       notice.value ? h("span", { class: ["status-part", "tone--ok"], "data-notice": "1" }, notice.value) : null,
     ]);
   }
+
+  /**
+   * 状态栏单独成一个组件，而不是在根实例的渲染里直接调 `statusBar()`。
+   *
+   * 两个理由：①"数据"那一段每秒都可能变，跟着根实例一起重渲染就等于每帧重画组件库 + 十二列
+   * 栅格 + 属性面板，而栅格里的每一格本来有自己的 `refresh_ms` 节拍；②它需要一条自己的节拍，
+   * 因为 `live.js` 有意不做渲染依赖（帧到了只改数据），状态栏上的"N 块板 / 重连第 K 次 /
+   * 已断开"要靠这一秒一跳才变得动。
+   *
+   * 但它**不能只有节拍**：`context.state` 不是响应式的（为的是能在 Node 里断言），单独成组件之后
+   * 父组件重渲染并不会带着它一起重渲染——点完"板"下拉，选中态立刻换了，状态栏那句"板 = …"却要
+   * 等下一跳才跟上。这一格说的正是"现在看的是哪一块"，慢一秒就是让运营者按一秒前的现场做判断。
+   * 所以这里也读 `signal.tick`：所有会改状态的动作都走 `actions.*`，那里统一 bump，状态栏跟着一起变。
+   */
+  const statusBarView = {
+    name: "StatusBar",
+    setup() {
+      const beat = ref(0);
+      const timer = globalThis.setInterval(() => {
+        beat.value += 1;
+      }, 1000);
+      rt.onBeforeUnmount(() => globalThis.clearInterval(timer));
+      return () => {
+        beat.value;
+        signal.tick.value;
+        return statusBar();
+      };
+    },
+  };
 
   function bootScreen() {
     if (!context.state.loading && !context.state.error) return null;
@@ -864,6 +908,8 @@ export function mount(el, rtOverride) {
 
   async function boot() {
     await context.boot({});
+    // 连接先于布局：数据通路不该等"布局读回来了"才开始收帧，而格子什么时候出现是另一回事。
+    live.attach(context.state.siteId);
     if (context.state.siteId) {
       await store.loadLayouts(context.state.siteId);
       // 刷新回来的不只是场地：点中的那一格也要在，否则面板先回到"没有选中"再被人重新点，
@@ -891,13 +937,15 @@ export function mount(el, rtOverride) {
         // 拖到一半被卸载（切场地、降级重建）：window 上那三条监听是这次拖动自己加的，必须跟着还掉。
         unwatchDrag();
         drag.value = null;
+        // 页面级的那条推送也要还：留着它，卸载重挂（例如降级重建）就会在同一场地的桶里坐两位订阅者。
+        live.close();
       });
       return () => {
         tick.value;
         return h("div", { class: "shell" }, [
           h("header", { class: "masthead" }, [
             h("h1", "RF Track 工作台"),
-            h("span", { class: "muted" }, "S5：栅格 + 组件库 + 属性面板 + 层级选择 · 演示数据带 DEMO 角标"),
+            h("span", { class: "muted" }, "S6：栅格 + 组件库 + 属性面板 + 层级选择 · 数据走 /ws/live 与 REST，回放帧带 MOCK 角标"),
             h("span", { class: "spacer" }),
             context.state.instanceRole === "aggregator"
               ? h("span", { class: "badge badge--agg" }, "汇聚实例只读")
@@ -905,7 +953,7 @@ export function mount(el, rtOverride) {
           ]),
           toolbar(),
           bootScreen() || h("div", { class: "cols" }, [library(), workspace(), propsPanel()]),
-          statusBar(),
+          h(statusBarView),
         ]);
       };
     },
@@ -915,6 +963,7 @@ export function mount(el, rtOverride) {
   const instance = app.mount(el);
 
   // 产品内的诊断入口：排查"切场地有没有碰写端点""租约还得干净吗"不必再另开脚本。
-  globalThis.rftrackWorkbench = { api, context, store, registry, actions, demo, instance, app };
-  return { api, context, store, actions, app: instance };
+  // `live` 也在里面：e2e 与人工排查读的是同一份连接账（帧数、来源、未知帧、跨场地行）。
+  globalThis.rftrackWorkbench = { api, context, store, registry, actions, live, instance, app };
+  return { api, context, store, actions, live, app: instance };
 }

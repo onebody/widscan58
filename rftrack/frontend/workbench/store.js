@@ -21,7 +21,7 @@ function pos_from(row) {
   return { x: row.pos_x, y: row.pos_y, w: row.pos_w, h: row.pos_h };
 }
 
-export function createStore({ api, context, registry, demo, timers = globalThis, columns = grid.COLUMNS }) {
+export function createStore({ api, context, registry, timers = globalThis, columns = grid.COLUMNS }) {
   const state = {
     loading: false,
     error: null,
@@ -642,7 +642,6 @@ export function createStore({ api, context, registry, demo, timers = globalThis,
     readOnlyReason,
     effectiveOf,
     describe,
-    demo,
     widgetsFor: (pluginId) => state.widgets.filter((widget) => widget.plugin_id === pluginId),
   };
 }

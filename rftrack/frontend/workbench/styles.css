@@ -62,7 +62,10 @@ ul { list-style: none; padding: 0; }
 .warn { color: var(--warning); }
 .absent { color: var(--muted); font-style: italic; }
 .note { color: var(--muted); font-size: 11px; }
+.note--stale { color: var(--warning); }
 .note--stage { color: var(--warning); }
+/* 声明与实测不一致时的注脚：这一句是在替板子说话，所以不能跟普通注脚同一个灰字。 */
+.note--warn { color: var(--warning); }
 
 /* --- 启动屏：Vue 三个来源都失败时，这里就是唯一的证据 -------------------------- */
 .boot-state {
@@ -252,11 +255,22 @@ select, input[type="text"], input[type="number"] {
   color: var(--ink-2);
   flex: none;
 }
-.badge--demo { background: var(--warning); color: #14140f; border-color: transparent; font-weight: 700; }
+/* 来源角标。`mock` 用**虚线框**而不是只换个颜色：回放帧与真实帧的差别是"这句话是谁说的"，
+ * 一个形状上的差别在灰度打印、截图放大、色觉差异下都还在，而颜色会。 */
+.badge--mock { color: var(--warning); border-color: var(--warning); border-style: dashed; }
+.badge--real { color: var(--good); border-color: var(--good); }
 .badge--api { color: var(--s1); border-color: var(--s1); }
 .badge--new, .badge--dirty { color: var(--warning); border-color: var(--warning); }
 .badge--unknown, .badge--missing, .badge--bad { color: var(--critical); border-color: var(--critical); }
+/* 没有帧时那枚来源角标：不是告警（页面没做错什么），所以跟"认不出来"分开放。 */
+.badge--none { color: var(--muted); border-color: var(--border); border-style: dashed; }
 .badge--agg { color: var(--serious); border-color: var(--serious); }
+/* 头部那枚是**通路**（这一格设计上读哪条路），用中性描边：它不是一种"来源可信度"，
+ * 不该借 `--critical`/`--good` 的表情，否则"实时推送"看着像告警、"REST 拉取"看着像正常。 */
+.badge--path-live { color: var(--s1); border-color: var(--border); }
+.badge--path-api { color: var(--muted); border-color: var(--border); }
+/* 混合来源要每一枚都看得见，所以是并排而不是"取第一个"。 */
+.badges { display: inline-flex; gap: 4px; align-items: baseline; flex-wrap: wrap; }
 .chip {
   font-size: 10px;
   font-family: var(--mono);
@@ -271,12 +285,39 @@ select, input[type="text"], input[type="number"] {
 .chip--disabled, .chip--idle, .chip--info { color: var(--muted); }
 .chip--dialing, .chip--warning, .chip--warn { color: var(--warning); border-color: var(--warning); }
 .chip--agg { color: var(--serious); border-color: var(--serious); }
+/* 四态的小牌子（`select.js` 判出来，`parts.js` 的 statePill 画出来）。
+ * 与 `.chip--*`（连接态）、`.cap--*`（能力三态）是三件不同的事，所以是三套 class：
+ * "这块板失联了"与"这一格没数据"混成同一种灰字，运营者就没法判断该去查哪一头。
+ * 每态另给一个不依赖颜色的前缀记号，理由与 `.cap--*` 那条一样。 */
+.pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  padding: 0 6px;
+  color: var(--ink-2);
+  flex: none;
+}
+.pill::before { margin-right: 4px; }
+.pill--muted { color: var(--muted); }
+.pill--ok { color: var(--good); border-color: var(--good); }
+.pill--warn { color: var(--warning); border-color: var(--warning); }
+.pill--unknown { color: var(--serious); border-color: var(--serious); }
+.pill--no_board::before { content: "—"; }
+.pill--empty::before { content: "○"; }
+.pill--stale::before { content: "!"; }
+.pill--offline::before { content: "✕"; }
+.pill--unsupported::before { content: "?"; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
 .dot--active { background: var(--good); }
 .dot--idle { background: var(--muted); }
 .src { font-family: var(--mono); font-size: 10px; color: var(--muted); }
-.src--demo { color: var(--warning); }
-.src--api { color: var(--s1); }
+/* 配置来源链上真正会出现的五个词（`config_layer.LAYERS`）。前一版这里是 `src--demo`/`src--api`，
+ * 两个都不会出现——属性面板里那枚来源小字因此一直是同一种灰。优先层越高越醒目。 */
+.src--default { color: var(--muted); }
+.src--global, .src--site, .src--layout { color: var(--ink-2); }
+.src--instance { color: var(--accent); font-weight: 600; }
 
 /* --- 表格与数据块 ------------------------------------------------------------ */
 table { border-collapse: collapse; width: 100%; }
@@ -317,10 +358,42 @@ th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: upp
 .node-title { font-weight: 600; }
 .node--lost { border-color: var(--critical); }
 .node--disabled { opacity: 0.65; }
-.event--warning { border-left: 3px solid var(--warning); }
-.event--alert { border-left: 3px solid var(--critical); }
-.event--info { border-left: 3px solid var(--grid); }
+.event--node_offline { border-left: 3px solid var(--critical); }
+.event--node_online { border-left: 3px solid var(--good); }
+.event-list { display: flex; flex-direction: column; gap: 4px; }
+.event.is-open { background: var(--surface-2); border-color: var(--accent); }
 .event-slot, .event-level { font-family: var(--mono); font-size: 11px; }
+.event-at { font-family: var(--mono); font-size: 10px; flex: none; }
+/* 点开一条记录之后展开的那一块：它挂在列表**外面**，所以列表那一列的行高不会被详情撑开——
+ * 200 条的窗里逐条内嵌详情，滚两屏就找不到现在是哪一条了。 */
+.event-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-left: 2px solid var(--accent);
+  padding: 4px 0 4px 8px;
+  background: var(--surface-2);
+  border-radius: 0 6px 6px 0;
+}
+.event-panel { display: flex; flex-direction: column; gap: 4px; }
+/* 证据链原文：`payload` 是后端存的字典，页面只做 `JSON.stringify`，一个字段都不改写。
+ * 有界高度 + 滚动：这一格是栅格里的一块，一条超长 payload 不许把它变成整页的纵轴。 */
+.evidence {
+  font-family: var(--mono);
+  font-size: 11px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--grid);
+  border-radius: 4px;
+  background: var(--page);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 150px;
+  overflow: auto;
+}
+.trend { display: flex; flex-direction: column; gap: 4px; }
+.num--active { color: var(--warning); font-weight: 600; }
 .event-kind { color: var(--muted); font-size: 10px; }
 .event-summary { flex: 1 1 auto; }
 .tree-node--site { font-weight: 600; }

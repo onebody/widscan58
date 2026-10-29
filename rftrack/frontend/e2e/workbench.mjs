@@ -8,10 +8,13 @@
  * 页面还起不起得来"。这三件事只有在浏览器里点一次才知道。
  *
  * 自包含，且只碰临时目录：
- *   夹具库 → 自己调 `rftrack/tools/export_workbench_fixtures.py`（每次重建，默认 /tmp/rftrack-e2e）
- *   服务   → 自己挑一个空闲端口起 uvicorn，`RFTRACK_DIALER_ENABLED=0`（不去拨真机器）
+ *   夹具库 → 自己调 `rftrack/tools/export_workbench_fixtures.py`（每次重建，默认 /tmp/rftrack-e2e；
+ *            回放那一段另导一份到 `<目录>-live`，因为阶段 A 一路保存/删格子，那份库已经不是我
+ *            写下的样子了）
+ *   服务   → 空闲端口起 uvicorn，`RFTRACK_DIALER_ENABLED=0`（不去拨真机器）；回放那一段再起一台，
+ *            只多两个 `RFTRACK_REPLAY_*` 环境变量，喂的就是导出脚本写下的那两份录制
  *   浏览器 → 自己起 headless Chrome，独立 `--user-data-dir`
- *   收尾   → `finally` 杀掉这两个由本脚本启动的子进程；截图与 results.json 留在 --out-dir
+ *   收尾   → `finally` 杀掉这些由本脚本启动的子进程；截图与 results.json 留在 --out-dir
  * 仓库里的 `backend/data/rftrack.sqlite3`、原有页面、真实接入机都不在这条路径上。
  *
  * 两处诚实声明（阶段报告里也要这么写）：
@@ -127,6 +130,9 @@ function freePort() {
  * 起真后端而不是 TestClient：这一轮要测的就是页面打到真实 origin 上会发生什么
  * （静态挂载、`?site=` 的形状、同源相对路径）。`-c` 里只做"读环境变量 → create_app → 跑"，
  * 不往仓库里塞一个假的 ASGI 入口文件。
+ *
+ * `extraEnv` 是给回放那一段的：同一份代码、同一套夹具，只多两个环境变量就变成
+ * "一台真在喂数据的实例"。少起一台进程就多一层"是不是环境不一样"的怀疑。
  */
 const SERVER_CODE = `
 import os, sys
@@ -138,7 +144,7 @@ uvicorn.run(create_app(Settings.from_env()), host="127.0.0.1",
             port=int(os.environ["RFTRACK_PORT"]), log_level="warning")
 `;
 
-async function startServer(dbPath) {
+async function startServer(dbPath, extraEnv = {}) {
   const port = await freePort();
   const child = spawn("python3", ["-c", SERVER_CODE], {
     cwd: BACKEND,
@@ -150,6 +156,7 @@ async function startServer(dbPath) {
       RFTRACK_PORT: String(port),
       RFTRACK_DIALER_ENABLED: "0",
       PYTHONUNBUFFERED: "1",
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -169,6 +176,32 @@ async function startServer(dbPath) {
     }
   }, { timeoutMs: 30000 });
   return { origin, port, child, log, stop: () => child.kill("SIGTERM") };
+}
+
+/**
+ * 导出夹具：`--out-dir` 指哪儿建哪儿。回放那一段要**另导一份**自己的库——
+ * 阶段 A 一路保存、删格子、另存为，那份库到这一段已经不是导出脚本刚写完的样子了，
+ * 而这一段的判据按 `w-detail`、`w-matrix` 这些实例号找格子。
+ */
+function exportFixtures(dir) {
+  console.log(`重建夹具库：${dir}`);
+  return new Promise((ok, no) => {
+    const child = spawn("python3", [FIXTURE_SCRIPT, "--out-dir", dir], { stdio: "inherit" });
+    child.on("exit", (code) => (code === 0 ? ok() : no(new Error(`夹具导出失败，退出码 ${code}`))));
+  });
+}
+
+/**
+ * 主实例的健康端点。收尾还要再问一次，所以这里必须接住"进程已经不在了"：
+ * 判据要说的是"哪一台没答话"，而不是一个来自 fetch 的裸异常。
+ */
+async function healthOfLive() {
+  try {
+    const response = await fetch(`${server.origin}/api/health`);
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
 }
 
 // --- CDP ------------------------------------------------------------------------
@@ -310,18 +343,40 @@ async function targetOutsideCanvas(selector, { cellH = CELL_H } = {}) {
     const handle = el.getBoundingClientRect();
     const inner = { w: window.innerWidth, h: window.innerHeight };
     const cellW = parseFloat(ws.style.getPropertyValue("--cell")) || 0;
-    const from = { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 };
+    // 落点取整：CDP 的 `Input.dispatchMouseEvent` 把 x/y 当整数，浏览器收到的一定是整像素。
+    // 期望行列必须用**同一个整数**换算，否则会差在"789.6 到底算第 9 行还是第 10 行"这种小数上
+    // ——那种红既不是页面的错，也不是夹具的错，只是两边各自取了一次整。
+    const from = { x: Math.round(handle.x + handle.width / 2), y: Math.round(handle.y + handle.height / 2) };
     const boxBottom = box.top + ws.clientHeight;
     const to = {
-      x: from.x + cellW * 2,
-      y: Math.min(Math.max(from.y + rowH, boxBottom + 10), inner.h - 10),
+      x: Math.round(from.x + cellW * 2),
+      y: Math.round(Math.min(Math.max(from.y + rowH, boxBottom + 10), inner.h - 10)),
     };
     const problems = [];
     if (from.y < 0 || from.y > inner.h) problems.push(`把手不在窗口里（${Math.round(from.x)},${Math.round(from.y)}，窗口高 ${inner.h}）`);
     if (to.x >= inner.w || to.x > box.right) problems.push(`横向落点 ${Math.round(to.x)} 出了窗口或画布右边（${inner.w} / ${Math.round(box.right)}）：那会顺带触发越界夹紧，把原点往左带`);
     if (to.y >= inner.h) problems.push(`纵向落点 ${Math.round(to.y)} 出窗口（高 ${inner.h}）`);
     if (to.y <= boxBottom) problems.push(`纵向落点 ${Math.round(to.y)} 没越过画布盒子底边（${Math.round(boxBottom)}）：那这条判据就没测到"拖出画布"那一档`);
-    return { ok: problems.length === 0, why: problems.join("；"), from, to, cellW, box: { right: box.right, bottom: boxBottom }, inner };
+    // `expectCell()`：把落点像素换算成"页面上应该在第几列/第几行"，用的就是 `grid.pointToCell()`
+    // 那一条式子（`metrics.top = rect.top - scrollTop`）。画布一旦内部滚动，可视底边对应的内容行
+    // 就比"把手往下拖一行"远得多——判据必须按换算来，不能按一个写死的"+1 行"来。
+    const origin = { x: box.left - ws.scrollLeft, y: box.top - ws.scrollTop, cellW, cellH: rowH };
+    const expectCell = (px, py) => ({
+      x: Math.floor((px - origin.x) / cellW),
+      y: Math.floor((py - origin.y) / rowH),
+    });
+    return {
+      ok: problems.length === 0,
+      why: problems.join("；"),
+      from,
+      to,
+      cellW,
+      expect: expectCell(to.x, to.y),
+      scroll: { top: ws.scrollTop, left: ws.scrollLeft, clientH: ws.clientHeight },
+      origin,
+      box: { right: box.right, bottom: boxBottom, top: box.top, left: box.left },
+      inner,
+    };
   }, selector, cellH);
   expect(spot.ok, `摆不出"拖出画布盒子但仍在窗口内"的落点：${spot.why}；这条判据要的就是"指针离开画布之后尺寸还在跟着走"，摆不出来就不能算通过`);
   return spot;
@@ -521,6 +576,64 @@ const statusFromDom = () =>
       visible: el.offsetWidth > 0 && el.offsetHeight > 0,
     }));
   });
+
+/**
+ * 页面那份实时窗的原样取证：判据要问的是"`live.js` 合并完了什么"，不是 DOM 上的形容词。
+ *
+ * 两边都读：`status()` 是连接层的账（来源、帧数、未知帧、跨场地行、退避第几次），
+ * `nodes` 是每块板的最后一帧。这一轮的数全程只有回放这一个来路，所以这两个都必须能断。
+ */
+const liveProbe = () => inPage(() => {
+  const live = window.rftrackWorkbench.live;
+  return {
+    status: live.status(),
+    nodes: [...live.state.nodes.values()].map((row) => ({
+      node_id: row.node_id,
+      name: row.display_name,
+      source: row.source,
+      ep: row.ep,
+      frames: row.frames,
+      seq: row.seq,
+      mode: row.mode,
+      lo_khz: row.loKhz,
+      age_s: live.ageS(row),
+      slots: [...row.channels.keys()].sort((a, b) => a - b),
+      channels: [...row.channels.entries()].map(([slot, point]) => ({ slot, rssi: point.rssi })),
+    })),
+    feed: live.state.feed.map((row) => ({
+      id: row.event_id,
+      kind: row.kind,
+      node: row.node_id,
+      source: row.source,
+      slot: row.slot,
+      ep: row.payload && row.payload.ep,
+      silence_s: row.payload && row.payload.silence_s,
+    })),
+  };
+});
+
+/** 逐格的 DOM 事实：牌子、来源角标、`.meta` 与正文，一次取回来供多条判据分着断。 */
+const probeWidgets = () => inPage(() => {
+  const STATES = ["no_board", "live", "stale", "offline", "unsupported", "empty"];
+  return [...document.querySelectorAll(".widget")].map((el) => {
+    const pills = [...el.querySelectorAll(".widget-body .pill")];
+    return {
+      instance: el.getAttribute("data-instance"),
+      plugin: el.getAttribute("data-plugin"),
+      meta: (el.querySelector(".meta") || {}).textContent?.replace(/\s+/g, " ").trim() || null,
+      body: (el.querySelector(".widget-body") || {}).textContent?.replace(/\s+/g, " ").trim() || null,
+      mock: el.querySelectorAll(".badge--mock").length,
+      real: el.querySelectorAll(".badge--real").length,
+      staleNote: Boolean(el.querySelector(".note--stale")),
+      linked: el.querySelectorAll("tr.is-linked").length,
+      canvas: el.querySelectorAll("canvas").length,
+      rows: el.querySelectorAll("tbody tr").length,
+      offlineRow: Boolean(el.querySelector(".event--node_offline")),
+      offlineMock: el.querySelectorAll(".event--node_offline .badge--mock").length,
+      states: pills.map((pill) => [...pill.classList].map((cls) => cls.slice(6)).find((cls) => STATES.includes(cls)) || null),
+    };
+  });
+});
 
 const textOf = (selector) => inPage((sel) => {
   const el = document.querySelector(sel);
@@ -787,6 +900,8 @@ const byId = (widgets, id) => widgets.find((row) => row.id === id);
 // --- 主流程 ---------------------------------------------------------------------
 
 let server = null;
+/** 回放那一段的第二实例：判据跑到一半也可能崩，收尾必须连它一起收掉。 */
+let server2 = null;
 let browser = null;
 
 async function run() {
@@ -794,15 +909,8 @@ async function run() {
   mkdirSync(SHOTS, { recursive: true });
 
   const dbPath = join(options.fixturesDir, "workbench-fixtures.sqlite3");
-  if (!options.keepFixture || !existsSync(dbPath)) {
-    console.log(`重建夹具库：${dbPath}`);
-    await new Promise((ok, no) => {
-      const child = spawn("python3", [FIXTURE_SCRIPT, "--out-dir", options.fixturesDir], { stdio: "inherit" });
-      child.on("exit", (code) => (code === 0 ? ok() : no(new Error(`夹具导出失败，退出码 ${code}`))));
-    });
-  } else {
-    console.log(`复用夹具库：${dbPath}`);
-  }
+  if (!options.keepFixture || !existsSync(dbPath)) await exportFixtures(options.fixturesDir);
+  else console.log(`复用夹具库：${dbPath}`);
   const manifest = JSON.parse(readFileSync(join(options.fixturesDir, "manifest.json"), "utf8"));
   const [siteA, siteB] = manifest.sites;
   const unknownPlugin = manifest.degraded.unknown_plugin;
@@ -887,16 +995,28 @@ async function run() {
     return `${frame.plugin} 仍在原位，标题回显库里那个 id：${frame.title}`;
   });
 
-  await check("演示组件带 DEMO 角标，组件库把没上线的连同原因一起说", async () => {
-    const demo = await countOf(".widget-head .badge--demo");
+  await check("S6 起没有 DEMO 角标：头部那枚说的是通路，组件库把没上线的连同原因一起说", async () => {
+    const demo = await countOf(".badge--demo");
+    const heads = await inPage(() => [...document.querySelectorAll(".widget")].map((w) => ({
+      instance: w.dataset.instance,
+      plugin: w.dataset.plugin,
+      missing: w.classList.contains("widget--missing"),
+      badge: (w.querySelector(".widget-head .badge") || {}).textContent?.trim() || null,
+    })));
+    const registered = heads.filter((row) => !row.missing);
+    expect(demo === 0, `页面上还有 ${demo} 枚 DEMO 角标：这四块格子现在读的是 /ws/live 与 REST，不再自己造数`);
+    expect(registered.length === 4, `已注册的格子该是 4 块（第 5 块是未注册占位），读到 ${registered.length}：${JSON.stringify(heads)}`);
+    expect(registered.every((row) => /^(实时推送|REST 拉取)$/.test(row.badge || "")),
+      `这些格子的头部角标没把自己的通路说出来：${JSON.stringify(registered)}`);
+    expect(!heads.some((row) => row.badge === "来源未知"),
+      "头部角标把注册表里写着的通路说成了「来源未知」：通路词表与帧来源词表是两件事，混用就把已知说成未知");
     const planned = await inPage(() => {
       const off = [...document.querySelectorAll(".lib-planned")];
       return off.length ? { name: off[0].textContent.replace(/\s+/g, " ").trim(), reason: (off[0].parentElement.querySelector(".lib-reason") || {}).textContent || "" } : null;
     });
-    expect(demo === 4, `DEMO 角标 ${demo} 个，应该正好是四块演示格子`);
     expect(planned, "组件库里没有一条「没上线 + 原因」");
     expect(/不上线的原因/.test(planned.reason), `灰条目没说为什么：${planned.reason}`);
-    return `${demo} 个 DEMO 角标；库里第一条灰项：${planned.name}｜${planned.reason}`;
+    return `${demo} 枚 DEMO 角标；通路角标 ${[...new Set(registered.map((row) => row.badge))].join("/")}；库里第一条灰项：${planned.name}｜${planned.reason}`;
   });
 
   await check("状态栏把当前场地/位置/接入机/板逐个写出来（不是只藏在下拉里）", async () => {
@@ -1018,20 +1138,25 @@ async function run() {
   });
   await dragTo(spot.from, spot.to);
 
-  await check("拉右下角把手拖出画布盒子：宽 +2、高 +1，越界夹紧、原点不被带跑", async () => {
+  await check("拉右下角把手拖出画布盒子：右下角跟到指针那一格，越界夹紧、原点不被带跑", async () => {
     const snap = await snapshot();
     const grown = byId(snap.widgets, "channel-matrix-1");
-    const dw = grown.w - handleBefore.w;
-    const dh = grown.h - handleBefore.h;
     const probe = await inPage(() => window.__probe);
+    // 期望值由落点像素换算而来（`spot.expect`，式子与 `grid.pointToCell` 同一条），不是写死的
+    // "+1 行/+2 列"：画布内部滚动多少取决于这一屏有几格、窗口多高，写死的那个数只在一个
+    // 特定现场下成立——红的时候既可能是页面错，也可能是夹具错，分不开。
+    const wantW = spot.expect.x - handleBefore.x + 1;
+    const wantH = spot.expect.y - handleBefore.y + 1;
     expect(probe.total > 0, `这段拖动里页面一条 pointermove 都没收到（把手 ${Math.round(spot.from.x)},${Math.round(spot.from.y)} → 落点 ${Math.round(spot.to.x)},${Math.round(spot.to.y)}）：那是事件没派发，不是页面的事`);
     expect(probe.outside > 0, `${probe.total} 段 pointermove 全在画布盒子内（右 ${Math.round(spot.box.right)} / 底 ${Math.round(spot.box.bottom)}）：这条判据没测到"拖出画布"那一档`);
-    expect(dw >= 2 && dw <= 3, `宽从 ${handleBefore.w} 变成 ${grown.w}（+${dw}），期望 +2～+3——落点在画布右边 2 列外，栅格却没过`);
-    expect(dh >= 1 && dh <= 2, `高从 ${handleBefore.h} 变成 ${grown.h}（+${dh}），期望 +1～+2（落点往下取了一行/盒子底边 + 10）`);
+    expect(grown.w >= 2, `放大没跟着指针走：宽还是 ${grown.w}（落点在第 ${spot.expect.x} 列，期望 ${wantW}）`);
+    expect(grown.h >= handleBefore.h + 1, `放大没跟着指针走：高从 ${handleBefore.h} 变成 ${grown.h}（落点在第 ${spot.expect.y} 行，期望 ${wantH}）`);
+    expect(grown.w === wantW, `宽的右下角停错列：库里的 w=${grown.w}，按落点像素该是 ${wantW}（指针 ${Math.round(spot.to.x)}，原点在内容坐标 ${Math.round(spot.origin.x)}，列宽 ${Math.round(spot.cellW * 100) / 100}）`);
+    expect(grown.h === wantH, `高的右下角停错行：库里的 h=${grown.h}，按落点像素该是 ${wantH}（指针 ${Math.round(spot.to.y)}，内容原点 ${Math.round(spot.origin.y)}=盒顶 ${Math.round(spot.box.top)} 减滚动 ${Math.round(spot.scroll.top)}，行高 ${CELL_H}）`);
     expect(grown.x + grown.w <= 12, `越界没夹紧：x=${grown.x} w=${grown.w}，右边到了第 ${grown.x + grown.w} 列（画布只有 12 列）`);
     expect(grown.x === handleBefore.x && grown.y === handleBefore.y, `原点被拉把手带跑了：${grown.x},${grown.y}`);
     await expectNoOverlap('放大之后与别的格子重叠了，栅格没推开');
-    return `+${dw}×+${dh} → ${grown.w}×${grown.h}（右边缘第 ${grown.x + grown.w} 列）；${probe.outside}/${probe.total} 段 move 在画布盒子外（盒子右 ${Math.round(spot.box.right)} / 底 ${Math.round(spot.box.bottom)}，落点 ${Math.round(spot.to.x)},${Math.round(spot.to.y)}，窗口 ${spot.inner.w}×${spot.inner.h}）`;
+    return `${handleBefore.w}×${handleBefore.h} → ${grown.w}×${grown.h}（右下角落在第 ${spot.expect.x} 列 / 第 ${spot.expect.y} 行，右边缘第 ${grown.x + grown.w} 列）；${probe.outside}/${probe.total} 段 move 在画布盒子外（盒子右 ${Math.round(spot.box.right)} / 底 ${Math.round(spot.box.bottom)}，落点 ${Math.round(spot.to.x)},${Math.round(spot.to.y)}，画布已滚 ${Math.round(spot.scroll.top)}px）`;
   });
 
   await check("把一块拖到另一块身上：谁都不许盖住谁，被推走的那块也一起标脏", async () => {
@@ -1155,8 +1280,22 @@ async function run() {
     expect(detail.config.threshold_db === -92, `阈值回退成 ${detail.config.threshold_db}`);
     expect(detail.threshold === -92, `服务端算的生效值不是 -92（${detail.threshold}）`);
     expect(byId(snap.widgets, "w-matrix").y !== 0, "被推走的那格没入库：刷新后弹回了原位");
-    const body = await textOf('.widget[data-instance="w-detail"]');
-    expect(/-92\.0 dBFS/.test(body || ""), `组件本体没把 -92 说出来：${(body || "").slice(0, 80)}`);
+    // 阈值这一格在"没有帧"时本体画的是四态那句话，不是阈值——`-92` 是否真的生效由上面两条
+    // （库里的 `config.threshold_db` 与服务端算出的 `threshold`）说了算。这里断言的是另一件事：
+    // 没数时必须**说出为什么没数**，而且不许摆出一个像是测出来的 dBFS（任务书：不支持/没有的
+    // 东西不许画成有）。DOM 里的真数字要到回放那一段才断言。
+    const cell = await inPage(() => {
+      const el = document.querySelector('.widget[data-instance="w-detail"] .widget-body');
+      if (!el) return null;
+      const why = el.querySelector(".empty");
+      return {
+        why: why ? why.textContent.replace(/\s+/g, " ").trim() : null,
+        body: el.textContent.replace(/\s+/g, " ").trim().slice(0, 140),
+      };
+    });
+    expect(cell, "w-detail 这一格没画出来");
+    expect(cell.why, `这一格既没摆数也没说为什么没数：${cell.body}`);
+    expect(!/dBFS/.test(cell.body), `没有帧却把 dBFS 摆上了页面（那是编出来的数）：${cell.body}`);
     expect(snap.draft.length === 0 && snap.audit.leases === snap.widgets.length, "刷新后还有脏标记或租约对不上");
     return `7 格都在库里（w-matrix 现在 ${byId(snap.widgets, "w-matrix").x},${byId(snap.widgets, "w-matrix").y}）；生效值 ${detail.threshold}`;
   });
@@ -1390,13 +1529,31 @@ async function run() {
     return `${line}｜服务端回的 defaults=${JSON.stringify(snap.layout.defaults)}`;
   });
 
-  await check("降级那份格子的组件照常渲染：只读不等于不画", async () => {
-    const rendered = await inPage((instance) => {
-      const el = document.querySelector(`.widget[data-instance="${instance}"] .widget-body`);
-      return el ? el.textContent.replace(/\s+/g, " ").trim().slice(0, 80) : null;
+  await check("降级那份格子的组件照常渲染：只读不等于不画，没数据也要说得出为什么", async () => {
+    const frame = await inPage((instance) => {
+      const STATES = ["no_board", "live", "stale", "offline", "unsupported", "empty"];
+      const el = document.querySelector(`.widget[data-instance="${instance}"]`);
+      if (!el) return null;
+      const pill = el.querySelector(".widget-body .pill");
+      // 牌子上挂着 `pill--<语气>` 与 `pill--<状态>` 两个类：按"哪个是认识的状态名"来认，
+      // 不能拿第一个 `pill--*` 当状态——`unsupported` 的语气恰好也叫 `unknown`，取错就判成不合法。
+      const state = pill ? [...pill.classList].map((cls) => cls.slice(6)).find((cls) => STATES.includes(cls)) : null;
+      return {
+        body: el.querySelector(".widget-body")?.textContent.replace(/\s+/g, " ").trim().slice(0, 120) || null,
+        label: pill ? pill.textContent.trim() : null,
+        state,
+        title: (el.querySelector(".widget-title") || {}).textContent?.trim() || null,
+      };
     }, siteB.secondary_instance);
-    expect(rendered && /MHz|DEMO/.test(rendered || ""), `格子本体是空的：${rendered}`);
-    return rendered;
+    expect(frame, `${siteB.secondary_instance} 这一格根本没画出来`);
+    // S6 起这一格读的是 `/ws/live`：这一轮里没有帧，所以"照常渲染"的证据不是"里面有数"，
+    // 而是**组件跑了、并且如实说出为什么没数**。四态之外的"空白一格"才是这一层的不许。
+    expect(!!frame.state, `格子里没有四态那枚牌子（读到 ${JSON.stringify(frame)}）：只读布局不许把组件渲染也一起关掉`);
+    expect(frame.body && /离散频道电平，不是频谱/.test(frame.body), `这一格没说自己画的是离散频道：${frame.body}`);
+    expect(frame.body.split("这块板没声明电平帧能力").length - 1 === 1 || frame.state !== "unsupported",
+      `牌子与正文把同一句印了两遍：${frame.body}`);
+    expect(!/DEMO|演示/.test(frame.body || ""), `降级格子里出现了演示字样：${frame.body}`);
+    return `${frame.title}·${frame.state}「${frame.label}」｜${frame.body.slice(0, 72)}…`;
   });
 
   await check("降级状态加格子、拖格子都不许改到状态：页面上给出理由", async () => {
@@ -1562,19 +1719,476 @@ async function run() {
   cdp.off(interceptor);
   await shot("04-offline-vendor");
 
+  // ---------------------------------------------------------------- 回放实例
+  /*
+    阶段 A 全程不碰真串口（`RFTRACK_DIALER_ENABLED=0`），所以那一轮的页面里一块真帧都没有：
+    四态断的是"没数的时候说什么"。S6 的出口判据要的是另一半——**真数值流经 `/ws/live`**，
+    而唯一能喂进真字节的通路是回放 runner 读一份录制。于是这一段起第二实例：
+
+    · 新 origin ⇒ localStorage 干净，首屏"不许猜场地"在这一轮重新成立一次；
+    · 另导一份夹具库 ⇒ 阶段 A 保存过、删过格子的那份库不许影响这里按实例号找格子的判据；
+    · 两份录制（A 20 s、B 60 s）⇒ A 短到能在同一轮里演完，于是"演完之后距今几秒"与
+      "失联事件"都真出现过；B 长到切过去时它还在演，"清空旧场地的数"与"接上新场地的数"
+      落在同一条时间线上，不必把服务再起一遍。
+
+    断的是"录制里的字节 → `/ws/live` 的一帧 → DOM 上那串数字"整条路。期望值不在这文件里
+    写死：它们从清单里的 `expect_last` 来，而那份数是导出脚本用读取端把文件回读一遍算的。
+  */
+  section("第二实例 + 两份录制：页面上那串数字真是从字节流里解出来的");
+
+  const liveDir = `${options.fixturesDir}-live`;
+  const liveDb = join(liveDir, "workbench-fixtures.sqlite3");
+  if (!options.keepFixture || !existsSync(liveDb)) await exportFixtures(liveDir);
+  else console.log(`复用夹具库：${liveDb}`);
+  const liveManifest = JSON.parse(readFileSync(join(liveDir, "manifest.json"), "utf8"));
+  const [liveA, liveB] = liveManifest.sites;
+  const planA = liveA.replay;
+  const planB = liveB.replay;
+  expect(planA && planB, `清单里没有回放条目：${JSON.stringify(Object.keys(liveManifest))}`);
+
+  server2 = await startServer(liveDb, {
+    RFTRACK_REPLAY_DIR: liveManifest.replay.dir,
+    RFTRACK_REPLAY_LOOP: "0",
+  });
+  console.log(`  回放实例：${server2.origin}（库 ${liveDb}，录制 ${liveManifest.replay.dir}）`);
+  const health2 = async () => {
+    try {
+      return await (await fetch(`${server2.origin}/api/health`)).json();
+    } catch {
+      return null;
+    }
+  };
+  /** 按实例号取那一格的 DOM 事实（牌子、角标、meta、正文），判据才知道该问哪一格。 */
+  const cellFacts = async (instance) => (await probeWidgets()).find((row) => row.instance === instance);
+
+  /**
+   * 该跟着新鲜度一起说过期的四格。判据只有一个来源：`components/select.js` 的 `dataState()`
+   * 对**当前这块板**的那一行帧算 `stale`，而这四格都把结果画成牌子（`channel-matrix.js:72`、
+   * `channel-detail.js:66`、`rssi-trend.js:138`、`signal-events.js:117`）。
+   * `w-nodes` 不在列：它画的是节点清单每一行自己的态（在线/失联/未声明），不是"某一格的数
+   * 多久没更新"，把它的牌子算进来就是替页面编一条它没做过的承诺。
+   */
+  const STALE_EXPECTED = ["w-matrix", "w-detail", "w-trend", "w-events"];
+
+  /**
+   * 等某个场地的录制**真的演到最后一帧**（服务端 `replay.done` 里有它的名字）。
+   *
+   * 为什么这是判据的前提而不是收尾：清单里的 `expect_last` 记的是**文件最后一帧**的数，
+   * 而页面上此刻显的是"已经喂进来的那一帧"。A 那份只有 19.5 s，爬坡公式在第 12 帧时是
+   * −53.95 dB —— 上一轮矩阵那条红就是红在这里（读到 −53.95，判据要 −95）。等放完，
+   * 页面上那个数与 `expect_last` 才是同一个东西；这一条等待是正面的、有界的。
+   */
+  async function waitForPlayed(name, { timeoutMs = 45000 } = {}) {
+    return waitFor(`${name} 放完`, async () => {
+      const health = await health2();
+      return health && health.replay.done.includes(name) ? health : null;
+    }, { timeoutMs });
+  }
+
+  /**
+   * 等**那一格的 DOM** 长成某个样子，而不是等内存里的数变了。
+   *
+   * `live.js` 有意不在帧到的那一刻催渲染：组件按自己的 `refresh_ms` 重读（`app.js` 文件头
+   * 第 2 条），事件流那一格的下限还是 500 ms。于是"内存里已经变了"与"DOM 上看得见"之间
+   * 天然差最多一拍——第一轮四条判据红的就是这个（`channel-detail.js:98` 画的就是 `row0.seq`，
+   * 内存里 39、DOM 里 38，差的那一帧就是那一拍）。判据问的是页面上那串数字，等待条件
+   * 就必须落在 DOM 上；等不到还是红，但那才是产品该红的样子。
+   */
+  async function waitForCell(instance, label, predicate, { timeoutMs = 20000 } = {}) {
+    return waitFor(`${instance} 的 DOM：${label}`, async () => {
+      const row = await cellFacts(instance);
+      return row && predicate(row) ? row : null;
+    }, { timeoutMs });
+  }
+
+  /** 详情那一格的逐字段读数（label/value 成对），判据问"页面上写的是几分贝"就走这里。 */
+  const detailFields = () => inPage(() =>
+    [...document.querySelectorAll('.widget[data-instance="w-detail"] .field')].map((el) => ({
+      label: (el.querySelector(".label") || {}).textContent?.trim() || "",
+      value: (el.querySelector(".value") || {}).textContent?.trim() || "",
+    })));
+
+  const openedAt = Date.now();
+  await openWorkbench(`${server2.origin}/workbench/`);
+  console.log(`  · 页面起来用了 ${Date.now() - openedAt} ms（A 那份录制只有 ${planA.span_s} s，还在演）`);
+
+  /*
+    这一页订不订 `/ws/live` 是**切场地之后**的事：新 origin 没有视图记忆，而这一库有两个场地，
+    `preferredSite()` 的第四条写的是"多个场地又谁都没配过时不猜"。所以首屏 siteId=null 是设计，
+    不是没起来——在这里等 `live.state.siteId` 等不到（第一轮就是这么红的，红得正是那条设计）。
+    反过来，这一屏正好是那条判据唯一能被真页面证明的地方，于是把它写成一条真判据。
+  */
+  await check("新 origin 的首屏不猜场地：两个场地谁都没配过，状态栏说的是「未选」而不是随机一个", async () => {
+    const scene = await inPage(() => {
+      const wb = window.rftrackWorkbench;
+      return {
+        sites: wb.context.state.sites.length,
+        siteId: wb.context.state.siteId,
+        liveSite: wb.live.state.siteId,
+        liveStatus: wb.live.state.status,
+        error: wb.context.state.error,
+      };
+    });
+    expect(scene.error === null, `boot 报了错：${JSON.stringify(scene.error)}`);
+    expect(scene.sites === 2, `这一库应该有 2 个场地，读到 ${scene.sites}——"不猜"的前提没了`);
+    expect(scene.siteId === null, `首屏竟然自己选了场地 ${scene.siteId}：那这条页面无从证明"不猜"`);
+    expect(scene.liveSite === null && scene.liveStatus === "idle", `没选场地却已经开了推送：${JSON.stringify(scene)}`);
+    const parts = await statusFromDom();
+    const value = statusValue(parts, "场地");
+    expect(value === "未选", `状态栏「场地」那一段说的是「${value}」，不是「未选」`);
+    return `2 个场地、0 个选中、推送口 ${scene.liveStatus}；状态栏场地=${value}`;
+  });
+
+  await switchSite(liveA.name);
+  await waitFor("这一页订上了 /ws/live", async () => {
+    const opened = await inPage((want) => {
+      const live = window.rftrackWorkbench.live;
+      return live.state.siteId === want && live.state.status === "open" ? live.state.siteId : null;
+    }, liveA.site_id);
+    return opened !== null;
+  }, { timeoutMs: 20000 });
+  await selectByLabel("接入机", planA.gateway_name);
+  await selectByLabel("板", planA.display_name);
+  await waitFor("A 的回放板进了页面的实时窗", async () => {
+    const probe = await liveProbe();
+    return probe.nodes.some((row) => row.node_id === planA.node_id) ? probe : null;
+  }, { timeoutMs: 25000 });
+
+  await check("这一实例认下了两份录制：来源写着 mock、不循环、一个字节都没被拒", async () => {
+    const health = await health2();
+    expect(health, "健康端点没答话：第二实例起不来，这一段所有判据都没有对象");
+    const r = health.replay;
+    expect(r.enabled, `回放没启用：${JSON.stringify(r)}`);
+    expect(r.source === "mock", `回放来源竟然是 ${r.source}：这一条是设计而不是遗漏`);
+    expect(r.loop === false, "loop 竟然是 true：这一段要的是放完就安静下来");
+    expect(r.rejected.length === 0, `有文件被拒：${JSON.stringify(r.rejected)}`);
+    expect(Object.keys(r.unmatched).length === 0, `有录制找不到归属，一个字节都不会喂：${JSON.stringify(r.unmatched)}`);
+    const names = r.recordings.map((row) => row.name).sort();
+    const want = [planA.name, planB.name].sort().join("+");
+    expect(names.join("+") === want, `演的是 ${names.join("+")}，清单里写的是 ${want}`);
+    expect(r.chunks_fed > 0, `一个字节都没喂出去：${JSON.stringify(r)}`);
+    const chunks = r.recordings.reduce((sum, row) => sum + row.chunks, 0);
+    return `${names.join(" + ")} · ${chunks} 块在档，已喂 ${r.chunks_fed} 块`;
+  });
+
+  await check("帧真的在往这一页送：实时窗里的帧计数在涨", async () => {
+    const first = await liveProbe();
+    expect(first.status.frames > 0, `一帧都没收到：${JSON.stringify(first.status)}`);
+    const grew = await waitFor(
+      "live 的帧计数增加",
+      async () => {
+        const again = await liveProbe();
+        return again.status.frames > first.status.frames ? again : null;
+      },
+      { timeoutMs: 12000 }
+    );
+    const row = grew.nodes.find((node) => node.node_id === planA.node_id);
+    expect(row.frames > 0, `这块板的帧数竟然是 ${row.frames}`);
+    return `推送口送了 ${first.status.frames} → ${grew.status.frames} 帧，其中 ${row.frames} 帧是 ${planA.display_name} 的`;
+  });
+
+  await check("换板只换视图：切到别的板，原来那台的帧还在往窗里进", async () => {
+    // `live.js` 只在**换场地**时清窗；换板换的只是"这一格说哪块板"。这条断的是别把
+    // 视图选择写成数据订阅：选了一下别的板，这一场地的采集就停了，那是没人要的行为。
+    const first = (await liveProbe()).nodes.find((row) => row.node_id === planA.node_id);
+    expect(first.seq !== null && first.seq !== undefined, `这块板进窗了却没有帧序：${JSON.stringify(first)}`);
+    await selectByLabel("板", "uart");
+    const name = await waitFor("状态栏切到 uart 那块板", async () => {
+      const value = statusValue(await statusFromDom(), "板");
+      return /uart/.test(value) ? value : null;
+    }, { timeoutMs: 10000 });
+    const grew = await waitFor(
+      "切走之后原来那块板的帧序还在涨",
+      async () => {
+        const row = (await liveProbe()).nodes.find((node) => node.node_id === planA.node_id);
+        return row && row.seq > first.seq ? row : null;
+      },
+      { timeoutMs: 12000 }
+    );
+    await selectByLabel("板", planA.display_name);
+    expect(grew.source === "mock", `切回来来源变成 ${grew.source}`);
+    return `选中 ${name} 时，${planA.display_name} 的 seq ${first.seq} → ${grew.seq}`;
+  });
+
+  await check("整页的来源只有 MOCK：没有一枚「真实」角标，状态栏那一段也跟着说", async () => {
+    const probe = await liveProbe();
+    expect(probe.status.sources.join("+") === "mock", `来源集合是 ${JSON.stringify(probe.status.sources)}，这一轮不该有第二种`);
+    const cells = await probeWidgets();
+    const real = cells.filter((row) => row.real > 0);
+    expect(!real.length, `这些格子里出现了「真实」角标：${JSON.stringify(real.map((row) => row.instance))}`);
+    const carrying = cells.filter((row) => row.mock > 0).map((row) => row.instance);
+    expect(carrying.includes("w-matrix") && carrying.includes("w-detail"), `读数格子没挂 MOCK：${carrying.join(",") || "空的"}`);
+    const status = await statusFromDom();
+    const data = statusValue(status, "数据");
+    expect(/MOCK/.test(data), `状态栏「数据」那一段说的是：${data}`);
+    expect(/已连接/.test(data), `状态栏没说上连接态：${data}`);
+    return `来源 ["mock"] · ${carrying.join("/")} 挂着 MOCK · 状态栏「${data}」`;
+  });
+
+  await check("A 场地的推送里读不到 B 场地的板：窗、DOM、串场计数三处都对得上", async () => {
+    const probe = await liveProbe();
+    const allowed = new Set(liveA.nodes);
+    const foreign = probe.nodes.filter((row) => !allowed.has(row.node_id));
+    expect(!foreign.length, `窗里有别的场地的板：${JSON.stringify(foreign.map((row) => row.node_id))}`);
+    expect(probe.status.cross_site_rows === 0, `页面侧拦到 ${probe.status.cross_site_rows} 行跨场地数据`);
+    expect(probe.status.unknown_frames === 0, `认不出的帧 ${probe.status.unknown_frames} 条：B 场地的帧不许混进这一桶`);
+    expect(probe.status.site_id === liveA.site_id, `订的是场地 ${probe.status.site_id}，选的是 ${liveA.site_id}`);
+    const text = await inPage(() => document.body.textContent);
+    for (const word of [planB.transport_addr, planB.display_name, planB.gateway_name]) {
+      expect(!text.includes(word), `页面上出现了 B 场地的「${word}」`);
+    }
+    return `窗里 ${probe.nodes.length} 块板全是 A 的 · 串场 0 · 未知帧 0`;
+  });
+
+  await check("矩阵只画进过帧的档位：三行、每行的数与清单一致，没测的档不许补出来", async () => {
+    await waitForPlayed(planA.name);
+    const slotsWanted = planA.slots.join(",");
+    const slots = await waitFor(
+      `${planA.display_name} 的档位进矩阵`,
+      async () => {
+        const probe = await liveProbe();
+        const row = probe.nodes.find((node) => node.node_id === planA.node_id);
+        return row && row.slots.length ? row.slots.join(",") : null;
+      },
+      { timeoutMs: 20000 }
+    );
+    expect(slots === slotsWanted, `帧里的档位是 ${slots}，录制里是 ${slotsWanted}`);
+    // 先等 DOM 追上（档位是逐帧攒出来的、数是一帧一帧换的，两者只会往上走），再断它**没越过**
+    // 三行：顺序反过来的话，"八档画满"这一条会被等待超时吞掉，红出来看不出是越界还是没跟上。
+    const wanted = Object.entries(planA.expect_last);
+    const m = await waitForCell(
+      "w-matrix",
+      "三行都画出、且最后一帧的三档数都落到 DOM 上",
+      (row) => row.rows >= planA.slots.length
+        && wanted.every(([, db]) => (row.body || "").includes(Number(db).toFixed(1))),
+      { timeoutMs: 30000 }
+    );
+    expect(m.rows === planA.slots.length, `矩阵画了 ${m.rows} 行，档位只有 ${planA.slots.length} 个：配置里的八档不许画满`);
+    expect(!/DEMO|演示/.test(m.meta || ""), `矩阵元信息里有演示字样：${m.meta}`);
+    for (const [slot, want] of wanted) {
+      const point = (await liveProbe()).nodes
+        .find((row) => row.node_id === planA.node_id)
+        .channels.find((entry) => entry.slot === Number(slot));
+      expect(point, `第 ${Number(slot) + 1} 档没有读数`);
+      expect(Math.abs(point.rssi - want) < 1e-6, `第 ${Number(slot) + 1} 档读到 ${point.rssi}，录制里是 ${want}`);
+      // 页面上那一行也得印出同一个数：只对内存里的窗，等于没测"S6 出口判据"那句真数值流到页面。
+      expect(m.body.includes(Number(want).toFixed(1)), `第 ${Number(slot) + 1} 档 ${want} 进了窗，DOM 那一行却没有：${m.body.slice(0, 120)}`);
+    }
+    return `档位 ${slots.split(",").map((s) => Number(s) + 1).join("、")} 档，读数与录制逐档对得上`;
+  });
+
+  await check("详情那一格的数字就是录制最后一帧的原值：连帧序、LO 与端点名一起对", async () => {
+    const done = await waitForPlayed(planA.name);
+    const row = (await liveProbe()).nodes.find((node) => node.node_id === planA.node_id);
+    expect(row.frames === planA.frames, `页面收到 ${row.frames} 帧，录制里是 ${planA.frames} 帧`);
+    expect(row.seq === planA.last_seq, `帧序停在 ${row.seq}，录制最后一帧是 ${planA.last_seq}`);
+    expect(row.ep === planA.ep, `端点是 ${row.ep}，录制归属是 ${planA.ep}`);
+    expect(row.source === "mock" && row.mode === planA.mode && row.lo_khz === planA.lo_khz, `帧头不对：${JSON.stringify(row)}`);
+    /*
+      DOM 上那一格只可能**落后**于内存里的实时窗（组件按拍重读，见 `waitForCell` 上方那段），
+      所以等待条件写成"追上窗里那个 seq"，而不是"等于清单里那个数"：后者会把一拍之差报成产品
+      报错。A 这一刻已经放完了（上面刚等过 `done`），窗里的 seq 不再动，这个等待才有终点。
+    */
+    const windowSeq = (await liveProbe()).nodes.find((node) => node.node_id === planA.node_id).seq;
+    const fields = await waitFor(`详情那一格的帧序追上实时窗里的 ${windowSeq}`, async () => {
+      const listed = await detailFields();
+      const shown = (listed.find((field) => field.label === "帧序") || {}).value || null;
+      return shown === String(windowSeq) ? listed : null;
+    }, { timeoutMs: 20000 });
+    const read = (label) => (fields.find((field) => field.label === label) || {}).value || null;
+    // 与 `parts.js` 的 `fmtDb` 同一个换算：`-95.0` 从 JSON 里读回来是数字 `-95`，
+    // 直接 `String()` 会印成 "-95"，DOM 上却是 "-95.0"——那是判据自己的错，不是页面的。
+    const want = Number(planA.expect_last[String(planA.slots[0])]).toFixed(1);
+    expect(read("当前 RSSI") === `${want} dBFS`, `详情里的当前 RSSI 是「${read("当前 RSSI")}」，录制里是 ${want}`);
+    expect(read("帧序") === String(planA.last_seq), `详情里的帧序是「${read("帧序")}」`);
+    expect(read("板") === planA.display_name, `详情里的板是「${read("板")}」`);
+    expect(done.replay.chunks_fed > 0, "放完了却一块都没喂");
+    return `第 ${planA.slots[0] + 1} 档 ${want} dBFS · 帧序 ${planA.last_seq} · LO ${planA.lo_khz} kHz · ${row.ep}`;
+  });
+
+  await check("点矩阵那一行设成联动：趋势随即从 REST 拿到带 MOCK 的摘要桶", async () => {
+    const target = await inPage(() => {
+      const tr = document.querySelector('.widget[data-instance="w-matrix"] tbody tr');
+      if (!tr) return null;
+      const rect = tr.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: tr.textContent.replace(/\s+/g, " ").trim() };
+    });
+    expect(target, "矩阵里没有可点的一行：那一格没画出档位");
+    await clickAt(target.x, target.y);
+    await waitFor("联动行标出来", () => countOf('.widget[data-instance="w-matrix"] tr.is-linked'), { timeoutMs: 10000 });
+    const t = await waitFor(
+      "趋势拿到摘要桶",
+      async () => {
+        const trend = await cellFacts("w-trend");
+        return trend.mock > 0 && /桶宽/.test(trend.meta || "") ? trend : null;
+      },
+      { timeoutMs: 25000 }
+    );
+    expect(t.canvas === 1, `趋势那一格没有画布（canvas ${t.canvas}）`);
+    expect(!/取数失败/.test(t.body || ""), `趋势说取数失败：${t.body}`);
+    return `联动后趋势元信息「${t.meta.slice(0, 72)}…」`;
+  });
+
+  await check("演完之后页面如实补一句失联：事件行带着 mock 与录制端点名", async () => {
+    const gone = await waitFor(
+      `${planA.display_name} 的失联事件进窗`,
+      async () => {
+        const probe = await liveProbe();
+        return probe.feed.find((row) => row.kind === "node_offline" && row.node === planA.node_id) || null;
+      },
+      { timeoutMs: 30000 }
+    );
+    expect(gone.source === "mock", `这条事件的来源是 ${gone.source}：回放写的事件不许被洗成真实`);
+    expect(gone.ep === planA.ep, `事件里的端点是 ${gone.ep}，录制归属是 ${planA.ep}`);
+    expect(gone.silence_s >= liveManifest.replay.silence_after_s, `安静判据只有 ${gone.silence_s} s，配置是 ${liveManifest.replay.silence_after_s} s`);
+    // 事件流那一格的重画下限是 500 ms（`signal-events.js:82`），比内存里那条事件晚一拍是常态。
+    const ev = await waitForCell("w-events", "失联那一行带上 MOCK", (row) => row.offlineRow && row.offlineMock > 0);
+    expect(/实时窗 \d+ 条/.test(ev.meta || ""), `事件流的窗账没说出来：${ev.meta}`);
+    const caps = (await liveProbe()).status.caps.events;
+    return `安静 ${gone.silence_s} s · 来源 mock · 事件窗 ${ev.meta.match(/实时窗 \d+ 条/)[0]}（上限 ${caps}）`;
+  });
+
+  await check("过期不等于没数：牌子、判据那句与 −95.0 同时在画", async () => {
+    const old = await waitFor(
+      `${planA.display_name} 过了新鲜度线`,
+      async () => {
+        const row = (await liveProbe()).nodes.find((node) => node.node_id === planA.node_id);
+        return row && row.age_s >= liveManifest.replay.stale_after_s ? row : null;
+      },
+      { timeoutMs: 30000 }
+    );
+    // 过期是个持久态（距今只会越来越大），所以逐块等牌子换过来再数。直接数会把"某一格
+    // 还差自己的那一拍"读成"页面不肯说过期"：矩阵 200 ms、事件 500 ms、趋势轮询 1 s，
+    // 同一条新鲜度线在三格里落地本来就有先后。
+    const staleCells = await waitFor(
+      "四格数据牌子都说过期",
+      async () => {
+        const rows = await probeWidgets();
+        const byId = new Map(rows.map((row) => [row.instance, row]));
+        return STALE_EXPECTED.every((id) => (byId.get(id) || { states: [] }).states.includes("stale"))
+          ? rows
+          : null;
+      },
+      { timeoutMs: 30000 }
+    );
+    const cells = staleCells;
+    const stale = cells.filter((row) => row.states.includes("stale"));
+    expect(stale.length >= STALE_EXPECTED.length, `说过期的格子是 ${stale.map((row) => row.instance).join("+")}，应该是 ${STALE_EXPECTED.join("+")}：${cells.map((row) => `${row.instance}:${row.states.join("/")}`).join(" ")}`);
+    const m = cells.find((row) => row.instance === "w-matrix");
+    expect(m.staleNote, "矩阵里没有那句带判据数字的过期说明");
+    const line = new RegExp(`最后一帧距今 \\d+ s，判据是 ${liveManifest.replay.stale_after_s} s`);
+    expect(line.test(`${m.meta} ${m.body}`), `那句是：${m.body.slice(0, 120)}`);
+    expect(m.body.includes(`${Number(planA.expect_last[String(planA.slots[0])]).toFixed(1)} dBFS`),
+      "数不在了：过期这一态把读数也一起收走了");
+    expect(old.seq === planA.last_seq, `过期了却还收到新帧：seq ${old.seq}`);
+    return `距今 ${old.age_s} s（判据 ${liveManifest.replay.stale_after_s} s）· ${stale.length} 块格子说过期 · 数还在`;
+  });
+
+  await shot("05-replay-mock");
+
+  await check("切到 B：A 的读数一个都不留，B 那份录制此刻还在送帧", async () => {
+    await switchSite(liveB.name);
+    await selectByLabel("接入机", planB.gateway_name);
+    await selectByLabel("板", planB.display_name);
+    const probe = await waitFor(
+      `${planB.display_name} 进窗`,
+      async () => {
+        const again = await liveProbe();
+        return again.nodes.some((row) => row.node_id === planB.node_id) ? again : null;
+      },
+      { timeoutMs: 25000 }
+    );
+    expect(!probe.nodes.some((row) => row.node_id === planA.node_id), "切了场地，A 那块板的读数还留在窗里");
+    expect(probe.nodes.every((row) => liveB.nodes.includes(row.node_id)), `窗里有 B 名单外的板：${JSON.stringify(probe.nodes.map((row) => row.node_id))}`);
+    expect(probe.status.nodes === 1, `B 的窗里有 ${probe.status.nodes} 块板，这一轮只喂了一份录制`);
+    expect(probe.status.frames > 0, "B 的快照一帧都没带过来");
+    expect(probe.status.sources.join("+") === "mock", `换了场地来源变成 ${JSON.stringify(probe.status.sources)}`);
+    const b = (await liveProbe()).nodes.find((row) => row.node_id === planB.node_id);
+    expect(b.channels.some((entry) => entry.slot === planB.slots[0]), `B 的档位没进帧：${JSON.stringify(b.channels)}`);
+    const text = await inPage(() => document.body.textContent);
+    for (const word of [planA.display_name, planA.gateway_name]) {
+      expect(!text.includes(word), `换了场地，页面上还留着 A 的「${word}」`);
+    }
+    return `B 窗里 ${probe.status.nodes} 块板 / ${probe.status.frames} 帧，A 的一条不在 · ${b.name} seq ${b.seq}`;
+  });
+
+  /*
+    夹具库里 B 的当前布局是那份"版本超前"的备用视图（`export_workbench_fixtures.py` 故意把
+    它设成 active，用来测降级渲染），它的格子实例号与 A 那份不一样。后面两条断线判据问的是
+    "画着这块板的那一格说了什么"，得先有一格可对——所以把 B 切回它的值班视图，五格实例号
+    与 A 一致。这一步不是判据，是把对象摆到台上；摆不上台，后面的等待自己会红。
+  */
+  await selectBySelector(".layout-pick", "值班视图");
+  await waitFor("B 切到值班视图、五格就位", async () => {
+    const ids = await widgetIds();
+    return (await inPage(() => window.rftrackWorkbench.store.state.layout.name)) === "值班视图"
+      && ids.includes("w-matrix") && ids.includes("w-events") ? ids : null;
+  }, { timeoutMs: 20000 });
+
+  // 断线只能这么测：数还新鲜时页面**不许**喊断线（"有数就画数"），所以那一态要由一块
+  // 从没进过帧的板来说。先把服务端的扇出账取下来（这一页确实在桶里），再杀掉这台实例——
+  // 热重载、退避、断线文案全是真发生过的，不是页面自己 `live.close()` 合成出来的。
+  const hubBefore = await health2();
+  const markDead = browser.consoleErrors.length;
+  server2.stop();
+  await waitFor("页面进入退避重连", async () => {
+    const probe = await liveProbe();
+    return probe.status.status === "retrying" ? probe : null;
+  }, { timeoutMs: 25000 });
+
+  await check("后端没了：数还新鲜时只说重连，不喊断线", async () => {
+    const probe = await liveProbe();
+    expect(probe.status.attempts >= 1, `竟然一次都没打算重连：${JSON.stringify(probe.status)}`);
+    const m = await waitForCell("w-matrix", "元信息里说出重连第几次", (row) => /重连中（第 \d+ 次）/.test(row.meta || ""));
+    const cells = await probeWidgets();
+    const claimed = cells.filter((row) => row.states.includes("offline"));
+    expect(!claimed.length, `这块还在画的板上喊了断线：${JSON.stringify(claimed.map((row) => row.instance))}`);
+    expect(/离散频道电平，不是频谱/.test(m.meta || ""), `元信息丢了那句口径说明：${m.meta}`);
+    return `第 ${probe.status.attempts} 次重连中 · 数照旧画 · 「${m.meta.slice(-40)}」`;
+  });
+
+  await check("换到一块从没进过帧的板：断线那一态与它的判据一起说出来", async () => {
+    // 四态的牌子出自 `select.js`，`node-status` 那一格画的是 REST 的板清单（它没有状态牌子），
+    // 所以这里问矩阵：它在"不是 live 也不是 stale"时把 `shown.text` 整句印进正文。
+    await selectByLabel("板", "uart");
+    const found = await waitForCell("w-matrix", "牌子上写断线", (row) => row.states.includes("offline"), { timeoutMs: 20000 });
+    expect(/推送断了：重连中（第 \d+ 次）/.test(found.body), `那一格说的是：${found.body.slice(0, 140)}`);
+    const status = await statusFromDom();
+    expect(/重连中/.test(statusValue(status, "数据")), `状态栏「数据」那一段没跟上：${statusValue(status, "数据")}`);
+    const hub = hubBefore ? hubBefore.live : null;
+    expect(hub && hub.subscribers >= 1, `服务端压根没把这一页记进桶：${JSON.stringify(hub)}`);
+    expect(hub.delivered > 0, `服务端一条都没送过，那"断"的是不存在过的连接：${JSON.stringify(hub)}`);
+    return `「断线」＋${found.body.match(/推送断了：[^ ·]{0,18}/)[0]} · 断之前服务端记着 ${hub.subscribers} 页、送过 ${hub.delivered} 条`;
+  });
+
+  await check("断线带来的控制台报错全部指向这台被我们杀掉的后端", async () => {
+    const fresh = browser.consoleErrors.slice(markDead).filter((row) => !/jsdelivr|npmmirror/.test(row));
+    const unrelated = fresh.filter((row) => !new RegExp(`127\\.0\\.0\\.1:${server2.port}`).test(row));
+    expect(!unrelated.length, `这些报错与断的后端无关：\n${unrelated.join("\n").slice(0, 600)}`);
+    notes.push(`回放实例被主动杀掉，带来 ${fresh.length} 条资源失败，全部指向 127.0.0.1:${server2.port}`);
+    return `${fresh.length} 条，全是 ${server2.origin} 的资源失败`;
+  });
+
   // ---------------------------------------------------------------- 收尾体检
   section("收尾：控制台、异常与后端");
   await check("整轮没有未捕获异常", async () => {
     expect(browser.exceptions.length === 0, `未捕获 ${browser.exceptions.length} 条：\n${browser.exceptions.join("\n").slice(0, 800)}`);
     return "0 条";
   });
-  await check("控制台报错为 0（CDN 被我们自己掐断的那几条除外）", async () => {
+  await check("控制台报错为 0（我们自己掐断 CDN、自己杀掉回放实例造成的资源失败除外）", async () => {
     const ours = browser.consoleErrors.filter((row) => !/jsdelivr|npmmirror|net::ERR_FAILED|Failed to load resource/.test(row));
     expect(ours.length === 0, `控制台报错 ${ours.length} 条：\n${ours.join("\n").slice(0, 800)}`);
-    return `0 条（另有 ${browser.consoleErrors.length - ours.length} 条是这一轮故意掐 CDN 造成的资源加载失败）`;
+    return `0 条（另有 ${browser.consoleErrors.length - ours.length} 条是这一轮自己掐 CDN、自己杀后端造成的资源加载失败）`;
+  });
+  await check("阶段 A 那台实例到收尾还活着：回放那一段杀的是它自己那台", async () => {
+    const health = await healthOfLive();
+    expect(health, `主实例 ${server.origin} 不答话了——那一句"杀后端"杀错了进程`);
+    expect(health.workbench.mounted === true, `工作台掉下来了：${JSON.stringify(health.workbench)}`);
+    return `status=${health.status}，两条 WS 各归各的实例`;
   });
   await check("后端健康：结构自检齐、工作台挂着、拨号循环没跑", async () => {
-    const health = await (await fetch(`${server.origin}/api/health`)).json();
+    const health = await healthOfLive();
+    expect(health, "主实例的健康端点没答话");
     expect((health.schema_gaps || []).length === 0, `结构不齐：${health.schema_gaps.join(",")}`);
     expect(health.workbench.mounted === true, `工作台没挂上：${JSON.stringify(health.workbench)}`);
     expect(health.dialer.enabled === false || health.dialer.running === false, "拨号循环在这一轮居然是开着的，它会在断言之前改库");
@@ -1585,9 +2199,12 @@ async function run() {
 // --- 入口与收尾 ------------------------------------------------------------------
 
 const watchdog = setTimeout(() => {
-  console.error("\n整轮超时（>420 s），强制收尾。");
+  console.error("\n整轮超时（>600 s），强制收尾。");
   finish(1);
-}, 420000);
+}, 600000);
+
+/** 用时打出来，好让上面那个上限是量出来的而不是猜的（回放那一段自己就要走 60 s 的录制）。 */
+const STARTED_AT = Date.now();
 
 let finishing = false;
 async function finish(code) {
@@ -1596,7 +2213,7 @@ async function finish(code) {
   clearTimeout(watchdog);
   const passed = results.filter((row) => row.ok).length;
   const failed = results.length - passed;
-  console.log(`\n=== 汇总 ===\n通过 ${passed} / ${results.length}，失败 ${failed}`);
+  console.log(`\n=== 汇总 ===\n通过 ${passed} / ${results.length}，失败 ${failed}，用时 ${((Date.now() - STARTED_AT) / 1000).toFixed(1)} s`);
   results.filter((row) => !row.ok).forEach((row) => console.log(`  ✗ [${row.section}] ${row.name} — ${row.evidence}`));
   const useful = notes.filter((row) => row.length);
   useful.forEach((row) => console.log(`  · ${row}`));
@@ -1611,6 +2228,9 @@ async function finish(code) {
   } catch { /* 收尾不带退出码 */ }
   try { if (browser) browser.stop(); } catch { /* 同上 */ }
   try { if (server) server.stop(); } catch { /* 同上 */ }
+  // 回放那台要么已经被判据杀掉了（断线那一条），要么这一段没跑完；两种都要收掉，
+  // 否则留下的是一台还在喂录制、还在改夹具库的后端进程。
+  try { if (server2) server2.child.kill("SIGKILL"); } catch { /* 同上 */ }
   await sleep(300);
   process.exit(failed === 0 ? 0 : 1);
   return code;

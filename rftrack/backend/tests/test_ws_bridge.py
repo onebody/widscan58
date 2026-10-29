@@ -534,4 +534,6 @@ def test_health_carries_the_bridge_section(db_path):
     """没人在连的时候也要说得出口：`sessions: []` 与"这块表没做"是两件事。"""
     rig = make_rig(db_path)
     health = rig.client.get("/api/health").json()
-    assert health["bridge"] == {"sessions": [], "upstreams": 0}
+    # `observer_failures` 也在这一节里：采集钩子抛过几次、被桥吞了。这一节是 `/ws/bridge`
+    # 自己的账，S6 之后它必须同时说清"透传正常但采集没收到"这种只对得上半边的情况。
+    assert health["bridge"] == {"sessions": [], "upstreams": 0, "observer_failures": 0}

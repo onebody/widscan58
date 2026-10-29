@@ -78,7 +78,7 @@ def test_metrics_full_layout_and_units():
     assert ch[0]["clearFloor"] is None  # -32768 哨兵 = 这条信道从没清过
     assert ch[1]["clearFloor"] == -81.0
     assert ch[0]["obwLoHz"] == -4000000 and ch[0]["obwHiHz"] == 4400000
-    assert [c["id"] for c in ch] == [3, 5, 8]
+    assert [c["id"] for c in ch] == [2, 4, 7]
 
 
 @pytest.mark.parametrize("name", LEVELS_CASES)

@@ -5,8 +5,9 @@
  * 工厂签名统一为 `create(rt, deps)`：
  * - `rt` 是 Vue 命名空间（`h`/`ref`/`onMounted`/`onUpdated`/`nextTick`）。无构建形态下 Vue 是
  *   脚本注入的全局量，模块顶层不能 `import` 它；从参数拿，这些文件才能在 Node 里被断言。
- * - `deps` 是 `{store, context, demo, actions, signal}`。组件不直接够 API：读后端一律走
- *   `context` 的那份状态，写后端一律走 `store`（它有只读闸门与脏标记）。
+ * - `deps` 是 `{store, context, live, actions, signal, registry, api}`。层级与场地上下文读
+ *   `context` 的那份状态，写后端一律走 `store`（它有只读闸门与脏标记），实时帧读 `live`
+ *   （整页一条 `/ws/live`），按时间取历史一律走 `api` 的 REST 端点——组件不许自己开第二条连接。
  */
 
 import * as registry from "../registry.js";

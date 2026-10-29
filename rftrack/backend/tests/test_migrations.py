@@ -89,6 +89,34 @@ def test_a_pre_s4_database_without_a_version_row_gets_the_new_tables(tmp_path):
     assert result.missing == ()
 
 
+def test_a_pre_s6_database_gets_the_observation_tables_and_their_indexes(tmp_path):
+    """S6 的两张表由 `004_events` 补出来，**连索引一起**：只补表不补索引的话，
+    结构自检照样绿（它只查表与列），而"按 `site_id` 过滤走全表扫"这条判据就悄悄失效了。
+    """
+    from alembic import command
+
+    db = tmp_path / "s5_era.sqlite3"
+    command.upgrade(migrate._alembic_config(migrate.url_for(db)), "003_import")
+    assert "signal_event" not in _tables(db)
+
+    result = migrate.run_migrations(db)
+    assert result.ok, result.error
+    assert {"signal_event", "sample_summary"} <= _tables(db)
+
+    expected = {
+        "signal_event": "ix_event_site_ts",
+        "sample_summary": "ix_summary_site_node_slot_bucket",
+    }
+    with sqlite3.connect(db) as conn:
+        for table, index in expected.items():
+            names = {row[1] for row in conn.execute(f"PRAGMA index_list({table})")}
+            assert index in names, (table, sorted(names))
+        columns = {
+            row[2] for row in conn.execute("PRAGMA index_info('ix_summary_site_node_slot_bucket')")
+        }
+    assert columns == {"site_id", "node_id", "slot", "ts_bucket"}
+
+
 def test_a_stamped_head_that_is_missing_tables_reports_honestly(tmp_path):
     """版本号是一行文字，结构是 PRAGMA 事实：对不上就必须 `ok=False` 并说出缺什么。
 
@@ -165,7 +193,7 @@ def test_re_running_migrations_is_idempotent(tmp_path):
 def test_create_all_path_and_alembic_upgrade_path_produce_the_same_schema(tmp_path):
     """两条建库路径必须落到同一个结构上。
 
-    比的是 PRAGMA 事实（列/外键/唯一约束），不是 DDL 文本：SQLite 不记外键名，
+    比的是 PRAGMA 事实（列/外键/唯一约束/索引），不是 DDL 文本：SQLite 不记外键名，
     而两条路径生成的子句顺序天然不同，按文本比只会产生假警报。
     """
     stamped = tmp_path / "via_create_all.sqlite3"
@@ -180,7 +208,7 @@ def test_create_all_path_and_alembic_upgrade_path_produce_the_same_schema(tmp_pa
 
 
 def _facts(path):
-    """{表名: {列, 外键, 唯一约束}}，全部来自 PRAGMA。"""
+    """{表名: {列, 外键, 唯一约束, 索引}}，全部来自 PRAGMA。"""
     facts = {}
     with sqlite3.connect(path) as conn:
         tables = [
@@ -201,15 +229,27 @@ def _facts(path):
                 (row[2], row[3], row[4], row[6])
                 for row in conn.execute(f"PRAGMA foreign_key_list({table})")
             )
+            listed = list(conn.execute(f"PRAGMA index_list({table})"))
             # index_list: seq, name, unique, origin, partial；origin u=表级 UNIQUE, c=列级 UNIQUE, pk=主键
             uniques = sorted(
                 tuple(row[2] for row in conn.execute(f"PRAGMA index_info('{name}')"))
-                for _seq, name, unique, origin, _partial in conn.execute(
-                    f"PRAGMA index_list({table})"
-                )
+                for _seq, name, unique, origin, _partial in listed
                 if unique and origin in ("u", "c", "pk")
             )
-            facts[table] = {"columns": columns, "fks": fks, "uniques": uniques}
+            # S6 的判据"按 site_id 过滤不得走全表扫"只认索引，所以索引形状也得进对拍：
+            # 名字、唯一性、列序（列序变了，查询就用不上这个索引）。
+            indexes = sorted(
+                (
+                    name,
+                    bool(unique),
+                    tuple(
+                        row[2]
+                        for row in conn.execute(f"PRAGMA index_info('{name}')")
+                    ),
+                )
+                for _seq, name, unique, _origin, _partial in listed
+            )
+            facts[table] = {"columns": columns, "fks": fks, "uniques": uniques, "indexes": indexes}
     return facts
 
 

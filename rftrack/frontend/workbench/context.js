@@ -259,8 +259,12 @@ export function createContext({ api, now = () => new Date(), staleAfterS = 120, 
   /**
    * 状态栏的那一行。`tone` 给页面配色，`text` 给窄屏换行读、也给测试断言。
    * 每一段都可能是"没选/没有"，那句话必须照样说出来——空字符串在这里等于事故。
+   *
+   * `data` 是调用方（`app.js`）从 `live.js` 取好的那一段："数据 真实 · 已连接 · 2 块板"。
+   * 措辞放在调用方而不是这里，是因为这一层只懂四级层级，不懂推送；把 `live` 引进来就等于
+   * 让状态栏依赖一条 WebSocket，而状态栏在纯 REST 的部署形态里照样得画得出来。
    */
-  function statusBar({ layout = null, dirty = false, demo = true } = {}) {
+  function statusBar({ layout = null, dirty = false, data = null } = {}) {
     const parts = [
       { label: "场地", value: site() ? site().name : (state.sites.length ? "未选" : "还没有场地"), tone: "site" },
       { label: "位置", value: relay() ? relay().name : "未选位置", tone: relay() ? "ok" : "muted" },
@@ -270,19 +274,24 @@ export function createContext({ api, now = () => new Date(), staleAfterS = 120, 
       { label: "改动", value: dirty ? "未保存" : "已保存", tone: dirty ? "warn" : "ok" },
       { label: "实例", value: state.instanceRole, tone: state.instanceRole === "aggregator" ? "warn" : "ok" },
     ];
-    if (demo) parts.push({ label: "数据", value: "DEMO", tone: "demo" });
+    if (data && data.value) parts.push({ label: "数据", value: data.value, tone: data.tone || "muted" });
     const extra = lag(site());
     if (extra) parts.push({ label: "汇聚", value: extra.label, tone: extra.stale ? "stale" : "ok" });
     return { parts, text: parts.map((part) => `${part.label} ${part.value}`).join(" · ") };
   }
 
-  /** 组件库那句"这个组件现在能不能用"的事实来源：只有答过话的那一路才算有能力。 */
+  /**
+   * 组件库那句"这个组件现在能不能用"的事实来源：只有答过话的那一路才算有能力。
+   *
+   * S6 起 `demo` 这一路没了——四个演示组件改读真实通路，于是库里那四格的第一次"可用"
+   * 不再是白送的：它要等 `context` 选上一个场地（`live` 这条推送才有 `?site=` 可订）。
+   * 判的是**通路**而不是"有没有数据"：通路在、板子不在，格子照样进，只是里面写着"无数据"。
+   */
   function capabilities() {
     const ready = [];
     if (state.loaded.hierarchy) ready.push("hierarchy");
     if (state.loaded.nodes) ready.push("nodes");
-    // 演示组件不需要后端能力，永远可用——但它的每一条读数都带 source:"demo"。
-    ready.push("demo");
+    if (state.siteId !== null && state.siteId !== undefined) ready.push("live");
     return ready;
   }
 

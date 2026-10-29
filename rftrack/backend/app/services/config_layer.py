@@ -90,7 +90,8 @@ class KeySpec:
     locked: bool = False
     requires_restart: bool = False
     unit: str | None = None
-    #: 今天只有生效值、还没有执行者的键（保留/摘要桶落在 S6 的表与清理任务上）。
+    #: 今天只有生效值、还没有执行者的键。`None` 才是"这个值真的在管事"，所以每清掉一个
+    #: 都得指着一段能跑的代码（`retention.purge_site`）或一张表，不能指着"阶段做完了"。
     pending_stage: str | None = None
 
 
@@ -132,12 +133,18 @@ KEYS: tuple[KeySpec, ...] = (
     KeySpec(
         "threshold_db", "float", WIDGETABLE, minimum=-128, maximum=0, default=-85, unit="dBFS"
     ),
+    # `slots` 的判定只有一处：`_validate_slots`（0 基、去重、非空、上界取 `slots_per_node`）。
+    # 这里这两头仍然填，因为 `_bounds()` 的产物会进 `GET /api/settings/schema`——写给页面与
+    # 任何按 schema 生成控件的工具看的。`minimum` 一度写成 1：那是把**显示**（1 基的"第 1 档"）
+    # 当成了**存储**（0 基下标），而第 0 档完全合法（`models.py` 的 `slot` 列注释、
+    # `routers/samples.py:45` 的闸、固件 `planner.c` 填的 plan 下标三处都是 0 基）。
     KeySpec(
-        "slots", "slots", WIDGETABLE, minimum=1, maximum_from_settings="slots_per_node", default=None
+        "slots", "slots", WIDGETABLE, minimum=0, maximum_from_settings="slots_per_node", default=None
     ),
     KeySpec("history_metric", "choice", WIDGETABLE, choices=("ema", "rssi"), default="ema"),
     KeySpec("show_average", "bool", WIDGETABLE, default=True),
-    # 保留与摘要：只有生效值计算，删数据与聚合的执行者分别在 S6 落表、S9 部署脚本里跑。
+    # 保留天数：S6 起了执行者（`retention.purge_site` 读的就是这里的生效值，两条 DELETE 都带
+    # `site_id`），所以这两个键的 `pending_stage` 清掉了。摘要桶宽与 RAW IQ 落库还没有——见下。
     KeySpec(
         "retention_events_days",
         "int",
@@ -146,7 +153,6 @@ KEYS: tuple[KeySpec, ...] = (
         maximum=3650,
         default_from_settings="retention_events_days",
         unit="d",
-        pending_stage="S6",
     ),
     KeySpec(
         "retention_summary_days",
@@ -156,7 +162,6 @@ KEYS: tuple[KeySpec, ...] = (
         maximum=3650,
         default_from_settings="retention_summary_days",
         unit="d",
-        pending_stage="S6",
     ),
     KeySpec(
         "summary_bucket_s",
@@ -166,10 +171,19 @@ KEYS: tuple[KeySpec, ...] = (
         maximum=3600,
         default_from_settings="summary_bucket_s",
         unit="s",
-        pending_stage="S6",
+        # 聚合器已经在按桶写行（S6 `SummaryAggregator`），缺的是让**这一层的覆写**决定桶宽：
+        # 读写两侧现在都取 `Settings.summary_bucket_s`（`routers/samples.py` 的 docstring 记着
+        # 为什么必须同源）。桶宽一改就是 SD 磨损档位，与它的实测一起属 S9（R11）。
+        pending_stage="S9",
     ),
     KeySpec(
-        "rawiq_persist", "bool", GLOBAL_ONLY, default_from_settings="rawiq_persist", pending_stage="S6"
+        "rawiq_persist",
+        "bool",
+        GLOBAL_ONLY,
+        default_from_settings="rawiq_persist",
+        # 采集层一律不落 RAW IQ（R11 的对策之一），库里也没有存它的表——这个键今天只有生效值。
+        # 要它有执行者，先得有 RAW IQ 的存储与磨损实测，同属 S9。
+        pending_stage="S9",
     ),
     KeySpec("alert_defaults", "object", SITABLE, default={}),
     # 本实例服务哪个场地：改它就是换拨号对象，属于"要重启/重连"那一类。

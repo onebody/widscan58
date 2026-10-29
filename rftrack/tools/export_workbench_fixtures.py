@@ -17,6 +17,10 @@
    `layout_version_too_new` / `malformed_json` / 认不出的 `plugin_id` 回答。
    夹具坏在半路比没有夹具更糟——它会让人测出一条不存在的结论。
 
+回放那两份录制（`--out-dir`/replay/）同一条自检：写完立刻用 `frame_parser` 读回来，
+把**最后一帧每档的真实电平**记进清单。冒烟脚本断的是这些数，而不是"公式应该是多少"——
+数由文件说了算，公式改了但文件没改，红的是这一轮而不是蒙混过关。
+
 用法：
 
     python3 rftrack/tools/export_workbench_fixtures.py            # 默认 /tmp/rftrack-e2e
@@ -44,15 +48,26 @@ from app.config import Settings  # noqa: E402
 from app.database import Database  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import Gateway, Node  # noqa: E402
+from app.services import frame_parser, replay  # noqa: E402
 from app.services.ingest import reconcile  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
+sys.path.insert(0, str(TOOLS_DIR))
+import make_replay_recording  # noqa: E402
+
 DEFAULT_OUT = Path("/tmp/rftrack-e2e")
 DB_NAME = "workbench-fixtures.sqlite3"
 MANIFEST_NAME = "manifest.json"
+REPLAY_DIR_NAME = "replay"
 #: 只许清掉我们自己产出的那几样；目录里有别的文件就停手（别把别人的目录当临时盘）。
-OWN_FILES = {DB_NAME, MANIFEST_NAME, f"{DB_NAME}-wal", f"{DB_NAME}-shm"}
+OWN_FILES = {
+    DB_NAME,
+    MANIFEST_NAME,
+    f"{DB_NAME}-wal",
+    f"{DB_NAME}-shm",
+    REPLAY_DIR_NAME,
+}
 
 #: 组件的 `instance_id` 在这里给死：冒烟脚本按同一批 id 找格子。让服务端随机生成的话，
 #: 每次导出的夹具都要重算一遍"点哪个"，那条 e2e 就成了跟着夹具变的活物。
@@ -67,6 +82,18 @@ GRID = [
 #: 未注册那一格用的 id：故意挑一个"新版本前端才认识"的名字，而不是拼错的现有名字——
 #: 前者是规范 §3.3 说的那种格子（别的实例带过来的布局），后者只是笔误。
 UNKNOWN_PLUGIN = "from-a-newer-build"
+
+#: 两个场地各一份回放录制，第 `i` 份属第 `i` 个场地的第一块 usb 板。
+#:
+#: 节拍与切片**故意不一样**：A 一帧一块、每 500 ms 一帧，走的是"字节到齐就成帧"那条最顺的路；
+#: B 每 1 s 一帧、按 16 字节切，走的是 `FrameStream` 的半截帧缓冲——真串口就是这么把一帧撕着送的。
+#: 时长也错开（A 20 s、B 60 s）：A 短到能在同一轮里演完，好让"最后一帧距今几秒"与"演完之后那条
+#: 失联事件"都在页面上真出现过；B 长到足够让冒烟从 A 切过来时它还在演，于是"切场地时旧场地的数
+#: 一个都不留"与"新场地的数立刻接上"是同一条时间线上的两件事，不用把服务再起一遍。
+REPLAY_PLAN = [
+    {"name": "levels-a", "seconds": 20.0, "hz": 2.0, "chunk_bytes": 0},
+    {"name": "levels-b", "seconds": 60.0, "hz": 1.0, "chunk_bytes": 16},
+]
 
 
 def endpoint(label: str, path: str, kind: str = "serial", online: bool = True) -> dict:
@@ -86,6 +113,80 @@ def fresh_scratch(out_dir: Path) -> None:
             raise SystemExit(f"{out_dir} 里有不属于本夹具的文件：{foreign}；换一个 --out-dir")
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
+
+
+def read_back_recording(path: Path, plan: dict, addr: str) -> dict:
+    """把刚写下的录制**用读取端**过一遍：`replay.load` + `FrameStream`，与后端演的同一条路。
+
+    为什么不在这里复述一遍公式：冒烟要断的是"页面上那个数"，而唯一可信的期望值来自这份文件
+    真含着的字节。公式改了、文件没跟着改，红应该红在这一轮导出，而不是让页面去对一个凭记忆写的数。
+    """
+    recording = replay.load(path)
+    if recording.transport_addr != addr:
+        raise SystemExit(f"{path.name} 的归属地址是 {recording.transport_addr}，不是 {addr}")
+    stream = frame_parser.FrameStream()
+    frames: list[dict] = []
+    for _, chunk in recording.chunks:
+        for item in stream.push(chunk):
+            if item.kind == "text":
+                continue
+            decoded = frame_parser.decode(item.type, item.payload)
+            if decoded is None:
+                raise SystemExit(f"{path.name} 第 {len(frames)} 帧解不出来")
+            frames.append(decoded)
+    if stream.crc_errors:
+        raise SystemExit(f"{path.name} 有 {stream.crc_errors} 帧 CRC 不对")
+    expected = max(2, round(plan["seconds"] * plan["hz"]))
+    if len(frames) != expected:
+        raise SystemExit(f"{path.name} 解出 {len(frames)} 帧，节拍说该是 {expected} 帧")
+    last = frames[-1]
+    return {
+        "frames": len(frames),
+        "chunks": len(recording.chunks),
+        "span_s": recording.span_s,
+        "chunk_bytes": plan["chunk_bytes"],
+        "ep": recording.ep,
+        "source": replay.SOURCE,
+        "mode": last["mode"],
+        "lo_khz": last["loKhz"],
+        "last_seq": last["seq"],
+        "slots": [channel["id"] for channel in last["channels"]],
+        #: 页面该显出来的那些数：档位号 → 最后一帧的 dBFS。
+        "expect_last": {str(channel["id"]): channel["rssi"] for channel in last["channels"]},
+    }
+
+
+def build_replay(out_dir: Path, manifest: dict, db: Database) -> list[int]:
+    """按 `REPLAY_PLAN` 写两份录制，归属到每个场地第一块 usb 板；回读结果进清单。"""
+    replay_dir = out_dir / REPLAY_DIR_NAME
+    node_ids: list[int] = []
+    for plan, entry in zip(REPLAY_PLAN, manifest["sites"]):
+        pick = entry["serial_addrs"][0]
+        with db.scope() as session:
+            row = session.scalar(
+                select(Node).where(
+                    Node.gateway_id == pick["gateway_id"], Node.transport_addr == pick["addr"]
+                )
+            )
+            if row is None:
+                raise SystemExit(f"{pick['addr']} 没有节点行：回放一个字节都不会喂")
+            node_id, display_name = row.node_id, row.display_name
+        recording = make_replay_recording.synthesize(
+            seconds=plan["seconds"], hz=plan["hz"], addr=pick["addr"], chunk_bytes=plan["chunk_bytes"]
+        )
+        path = make_replay_recording.write(recording, replay_dir, plan["name"])
+        entry["replay"] = {
+            "name": plan["name"],
+            "file": str(path),
+            "node_id": node_id,
+            "display_name": display_name,
+            "gateway_id": pick["gateway_id"],
+            "gateway_name": pick["gateway_name"],
+            "transport_addr": pick["addr"],
+            **read_back_recording(path, plan, pick["addr"]),
+        }
+        node_ids.append(node_id)
+    return node_ids
 
 
 def put_row(client, layout_id, instance_id, plugin_id, x, y, w, h, config) -> dict:
@@ -118,6 +219,7 @@ def build(out_dir: Path) -> dict:
                 "relays": [],
                 "gateways": [],
                 "nodes": [],
+                "serial_addrs": [],
                 "widgets": [],
                 "layouts": {},
             }
@@ -135,15 +237,23 @@ def build(out_dir: Path) -> dict:
                     },
                 ).json()
                 entry["gateways"].append(gateway["gateway_id"])
+                serial_addr = f"/dev/widscan58-{site_index}-{relay['relay_id']}"
+                # 回放的归属键：`(gateway_id, transport_addr)` 全局唯一才有唯一答案，
+                # 所以这里连"哪块板可以当回放主体"都先记下来，末尾再按它反查 `node_id`。
+                # 名字也记着：冒烟要先把接入机选到这一块名下，才能在"板"那一路下拉里找到它。
+                entry["serial_addrs"].append(
+                    {
+                        "gateway_id": gateway["gateway_id"],
+                        "gateway_name": gateway["name"],
+                        "addr": serial_addr,
+                    }
+                )
                 with db.scope() as session:
                     result = reconcile(
                         session,
                         session.get(Gateway, gateway["gateway_id"]),
                         [
-                            endpoint(
-                                f"widscan58-{site_index}-{relay['relay_id']}",
-                                f"/dev/widscan58-{site_index}-{relay['relay_id']}",
-                            ),
+                            endpoint(f"widscan58-{site_index}-{relay['relay_id']}", serial_addr),
                             # ②a 的 UART 出口：介质决定它会不会停这台接入机的 RH（R21）。
                             endpoint(
                                 f"uart-{site_index}-{relay['relay_id']}",
@@ -188,6 +298,9 @@ def build(out_dir: Path) -> dict:
             entry["layouts"]["secondary"] = secondary["layout_id"]
             manifest["layouts"].append({"layout_id": secondary["layout_id"], "site_id": entry["site_id"], "kind": "secondary"})
 
+        # --- 回放录制：两份合成帧，归属由库里的节点行说了算 --------------------
+        replay_nodes = build_replay(out_dir, manifest, db)
+
         # --- 三条"库里就是坏的"：只能用 SQL 造，API 到不了这个状态 --------------
         site_a, site_b = manifest["sites"]
         primary_a = site_a["layouts"]["primary"]
@@ -228,6 +341,14 @@ def build(out_dir: Path) -> dict:
                     6,
                 ),
             )
+            # 回放那两块板：只声明电平帧。录制里一个频谱帧、一段 RAW IQ 都没有，多声明一项
+            # 就是把没喂过的字节说成这块板能做——而页面上它长得和真的一样。
+            # 固件版本留空：录制不带版本上报，`node-status` 那句"固件未上报"才是这里的话。
+            for node_id in replay_nodes:
+                conn.execute(
+                    "UPDATE node SET capabilities_json = ? WHERE node_id = ?",
+                    (json.dumps({"levels": {"supported": True}}), node_id),
+                )
             conn.commit()
 
         site_a["widgets"] = [
@@ -243,6 +364,15 @@ def build(out_dir: Path) -> dict:
                 "expect_declaration_error": "malformed_json",
                 "expect_degrade_reason": "layout_version_too_new",
             },
+        }
+        #: 起回放实例要的那几个数。写在这里而不是让冒烟脚本去抄 `config.py` 的默认值：
+        #: 默认值改了，夹具里这份会跟着错出来，而抄过去的那份只会安静地等超时。
+        manifest["replay"] = {
+            "dir": str(out_dir / REPLAY_DIR_NAME),
+            "loop": False,
+            "silence_after_s": settings.capture_silence_s,
+            "flush_interval_s": settings.capture_flush_interval_s,
+            "stale_after_s": 15,
         }
 
         check(client, manifest)
@@ -299,6 +429,30 @@ def check(client, manifest: dict) -> None:
             broken = next(row for row in listed if row["layout_id"] == entry["expected_active"])
             assert broken["degraded"] is True and broken["degrade_reason"] == "layout_version_too_new", broken
 
+    # 回放的两块板：归属、声明、以及"别把没喂过的字节声明成能做"。
+    all_nodes = []
+    for entry in manifest["sites"]:
+        listed = client.get(f"/api/nodes?{urlencode({'site': entry['site_id']})}").json()
+        all_nodes.extend(listed)
+        plan = entry["replay"]
+        row = next((node for node in listed if node["node_id"] == plan["node_id"]), None)
+        assert row is not None, (entry["site_id"], plan["node_id"], [n["node_id"] for n in listed])
+        assert row["transport"]["addr"] == plan["transport_addr"], row["transport"]
+        assert row["display_name"] == plan["display_name"], row["display_name"]
+        caps = row["capabilities"]
+        assert caps["levels"]["supported"] is True, caps["levels"]
+        for name in ("spectrum", "rawiq"):
+            assert caps[name]["supported"] is False and caps[name]["reason"] == "undeclared", (name, caps[name])
+        assert row["fw_version"] is None, f"回放板没有版本上报，别替它填一个：{row['fw_version']}"
+
+    # 归属地址必须全场唯一：`replay` 查的是 `(gateway_id, transport_addr)`，两台接入机报同一个
+    # 地址就是 `ambiguous_gateway`，一个字节都不喂——那种夹具演不出来，只会让冒烟等超时。
+    addrs = [node["transport"]["addr"] for node in all_nodes]
+    replay_addrs = [entry["replay"]["transport_addr"] for entry in manifest["sites"]]
+    assert replay_addrs and len(set(replay_addrs)) == len(replay_addrs), replay_addrs
+    for addr in replay_addrs:
+        assert addrs.count(addr) == 1, f"{addr} 在 {addrs.count(addr)} 行上，回放会拒喂"
+
     # `?site=` 缺参的形状（S4 申报④补的那一条）：这一轮顺手把它钉住。
     missing = client.get("/api/layouts")
     assert missing.status_code == 422, missing.text
@@ -329,6 +483,17 @@ def main() -> int:
         f"（布局 {manifest['degraded']['unknown_plugin']['layout_id']}）；"
         f"坏 defaults + 版本超前布局 {manifest['degraded']['broken_layout']['layout_id']}"
     )
+    print(f"  回放：{manifest['replay']['dir']}（安静 {manifest['replay']['silence_after_s']} s、"
+          f"节拍 {manifest['replay']['flush_interval_s']} s、不循环）")
+    for entry in manifest["sites"]:
+        plan = entry["replay"]
+        # 清单里的键是**线上的 0-based 档位下标**，页面上画的是 1-based 频道号——
+        # 这行日志要跟操作者在矩阵里看到的那一行对得上，所以按显示口径打。
+        levels = " ".join(f"第 {int(slot) + 1} 档 = {value}" for slot, value in plan["expect_last"].items())
+        print(
+            f"    {plan['name']}：{entry['name']} 的 {plan['display_name']}（节点 {plan['node_id']}）"
+            f" {plan['frames']} 帧 / {plan['span_s']} s / 每块 {plan['chunk_bytes'] or '整帧'} 字节 → {levels}"
+        )
     return 0
 
 

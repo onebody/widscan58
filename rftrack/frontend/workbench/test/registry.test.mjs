@@ -8,40 +8,59 @@ import test from "node:test";
 
 import * as registry from "../registry.js";
 
-test("五个演示组件 + 两个实时组件，就是 S5 交付的全部实现", () => {
+test("六个组件按来源分两路：实时推送与 REST 拉取，没有第三路", () => {
   assert.deepEqual(registry.COMPONENTS.map((entry) => entry.id), [
     "channel-matrix", "channel-detail", "rssi-trend", "signal-events", "node-status", "site-tree",
   ]);
   assert.deepEqual(
-    registry.COMPONENTS.filter((entry) => entry.source === "demo").map((entry) => entry.id),
-    ["channel-matrix", "channel-detail", "rssi-trend", "signal-events"]
+    registry.COMPONENTS.filter((entry) => entry.source === "live").map((entry) => entry.id),
+    ["channel-matrix", "channel-detail", "signal-events"]
   );
   assert.deepEqual(
     registry.COMPONENTS.filter((entry) => entry.source === "api").map((entry) => entry.id),
-    ["node-status", "site-tree"]
+    ["rssi-trend", "node-status", "site-tree"]
   );
+  // S5 那一路 `demo` 必须彻底不在：留着它，`registry.sourceWord("demo")` 就会给一格
+  // 读不到真数的组件挂上"演示"这个词，而这一页再没有演示数据可演示。
+  assert.equal(registry.COMPONENTS.some((entry) => entry.source === "demo"), false);
 });
 
-test("每条声明都带尺寸、下限、需要哪些能力；source 只有 demo/api 两种", () => {
+test("每条声明都带尺寸、下限、需要哪些能力；source 只有 live/api 两种", () => {
   for (const entry of registry.COMPONENTS) {
     assert.ok(entry.size.w >= entry.min.w && entry.size.h >= entry.min.h, `${entry.id} 默认尺寸不许小于自身下限`);
     assert.ok(entry.min.w >= 2 && entry.min.h >= 1, `${entry.id} 的下限不许破栅格的 MIN_W`);
     assert.ok(entry.size.w <= 12, `${entry.id} 不许比整幅画布还宽`);
     assert.ok(Array.isArray(entry.needs) && entry.needs.length, `${entry.id} 必须声明依赖哪一路能力`);
-    assert.ok(["demo", "api"].includes(entry.source), `${entry.id} 的来源必须可判定`);
+    assert.ok(["live", "api"].includes(entry.source), `${entry.id} 的来源必须可判定`);
     assert.ok(typeof entry.summary === "string" && entry.summary.length > 0);
+    // `needs` 只能写 `context.capabilities()` 给得出的那三个词，写了别的永远不会满足，
+    // 这一条就会在库里永远是灰的——灰到底不是"还没到"，是拼错了。
+    for (const need of entry.needs) {
+      assert.ok(["live", "nodes", "hierarchy"].includes(need), `${entry.id} 依赖了不存在的能力 ${need}`);
+    }
   }
 });
 
-test("演示组件永远可点，实时组件要看能力的脸色", () => {
+test("来源词只认 live/api：认不出的来源要说「未知来源」而不是借一个已知的词", () => {
+  assert.equal(registry.sourceWord("live"), "实时推送");
+  assert.equal(registry.sourceWord("api"), "REST 拉取");
+  assert.equal(registry.sourceWord("demo"), "未知来源 demo");
+});
+
+test("每一格都要看能力的脸色：一条能力都没有时全部点不了", () => {
   const bare = registry.library({ capabilities: [] });
   const live = bare.filter((entry) => entry.kind === "live");
-  assert.equal(live.find((entry) => entry.id === "channel-matrix").available, true);
-  assert.equal(live.find((entry) => entry.id === "node-status").available, false);
+  assert.equal(live.every((entry) => entry.available === false), true, "没有通路就声称可点是假话");
+  assert.match(live.find((entry) => entry.id === "channel-matrix").reason, /缺少能力：live/);
   assert.match(live.find((entry) => entry.id === "node-status").reason, /缺少能力：nodes/);
 
-  const full = registry.library({ capabilities: ["demo", "nodes", "hierarchy"] });
+  const full = registry.library({ capabilities: ["live", "nodes", "hierarchy"] });
   assert.equal(full.every((entry) => entry.kind === "planned" || entry.available), true);
+
+  // 只订上推送、层级还没加载：矩阵该可点，树该灰着。
+  const half = registry.library({ capabilities: ["live"] });
+  assert.equal(half.find((entry) => entry.id === "channel-matrix").available, true);
+  assert.equal(half.find((entry) => entry.id === "site-tree").available, false);
 });
 
 test("未上线条目必须写清理由与阶段，空着不写才是问题", () => {

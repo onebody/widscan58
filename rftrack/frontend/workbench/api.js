@@ -155,6 +155,12 @@ export function createApi(options = {}) {
     nodes: ({ site, gateway } = {}) => get("/api/nodes", { site, gateway }),
     endpoints: (gatewayId) => get("/api/endpoints", { gateway: gatewayId }),
 
+    /** 摘要桶（S6）：参数名与端点一致，`slot: 0` 不许被当成"没给"。 */
+    samplesSummary: (params = {}) => get("/api/samples/summary", params),
+    eventsFeed: (params = {}) => get("/api/events", params),
+    /** 事件详情：`site` 可缺省（主键读不是跨场地扫表），带上了就是"这个场地下没有它"→ 404。 */
+    eventDetail: (eventId, site = null) => get(`/api/events/${eventId}`, { site }),
+
     layouts: (siteId) => get("/api/layouts", { site: siteId }),
     createLayout: (payload) => send("POST", "/api/layouts", payload),
     patchLayout: (layoutId, payload) => send("PATCH", `/api/layouts/${layoutId}`, payload),

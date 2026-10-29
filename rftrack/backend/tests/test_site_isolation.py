@@ -1,22 +1,28 @@
 """双场地下的"A 不影响 B"逐处判定（S4 门槛判据第二条）。
 
 夹具按定案的拓扑摆最小心机：**两个场地，每个场地两个中继位置、每位置一台接入机、
-每场地一份激活布局 + 一个同名格子**。单场地夹具验不出跨场地串场，多场地但没有同名格子
-又验不出"实例 id 只在布局内唯一"——所以这两件事都得在夹具里就位。
+每场地一份激活布局 + 一个同名格子**。每一条判定都得先有能对拍的对象：单场地验不出跨场地
+串场，多场地但没有同名格子又验不出"实例 id 只在布局内唯一"——所以这两件事都得在夹具里就位。
 
-六处判定里今天有实现的是四处：设置、布局、组件配置、节点范围。事件与告警的表在 S6、
-按场地的 WS 订阅在 S5/S7——那两处**显式 skip 并写清缺的是什么**，不拿"读回空列表"冒充
-隔离成功（空列表在两张表还不存在时永远成立，那是最坏的假绿）。
+清单里今天有实现的是六处：设置、布局、组件配置、节点范围、事件读取（`GET /api/events?site=`）、
+按场地的 WS 分桶（`/ws/live?site=`）。后两处 S4 时挂着 skip，S6 落了表就补上。只剩告警**显式
+skip**：规则引擎属 S8，而表还不存在时"读回空列表"永远成立——那是最坏的假绿，不能拿它冒充
+隔离成功。
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass, field
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models import Node
+from app.models import Node, SignalEvent
+from app.services.live import SNAPSHOT
+
+from test_ws_bridge import Page, until
 
 PLUGIN = "tile"
 
@@ -150,8 +156,14 @@ def test_site_a_retention_days_do_not_apply_to_site_b(rig):
     assert theirs["retention_events_days"]["source"] == "default"
 
     schema = {row["key"]: row for row in rig.client.get("/api/settings/schema").json()["keys"]}
-    # 说清执行者还没落地：值算得对不等于数据真在被删，这条不许被"测试通过"伪装成已交付。
-    assert schema["retention_events_days"]["pending_stage"] == "S6"
+    # S6 之后这两个键真的有人执行：`retention.purge_site` 读的就是这里的生效值，DELETE 带
+    # `site_id`（`tests/test_retention.py` 钉住"A 收紧不清 B"与"天数来自层级链"）。
+    # 所以这里改钉**标志位已清**——留着 "S6" 就等于页面继续显示"执行者还没上线"。
+    assert schema["retention_events_days"]["pending_stage"] is None
+    assert schema["retention_summary_days"]["pending_stage"] is None
+    # 反向的一半同样要说：桶宽与 RAW IQ 落库今天仍只有生效值，不许被邻近的绿测试带着清掉。
+    assert schema["summary_bucket_s"]["pending_stage"] == "S9"
+    assert schema["rawiq_persist"]["pending_stage"] == "S9"
 
 
 # --- 二：布局 ---------------------------------------------------------------
@@ -311,23 +323,98 @@ def test_nodes_are_only_listed_under_their_own_site(rig):
     assert [node["display_name"] for node in row.json()] == ["B 的板"]
 
 
-# --- 五、六：还没落地的两处，显式挂着 ---------------------------------------
+# --- 五、六：S6 落表之后各钉一次 ---------------------------------------------
 
 
-@pytest.mark.skip(reason="事件表属 S6（方案 §3 表结构与 §7 S6 行）：今天没有可查的表")
-def test_events_written_under_a_are_never_returned_for_b():
-    """判据：`GET /api/events?site=` 必须按场地过滤。表一落地就得把这条补上。"""
+def add_event(rig: Rig, which: str, *, source: str = "real") -> int:
+    """摆一条观测事实：写侧归采集层，这里只测读侧的场地过滤。"""
+    with rig.client.app.state.db.scope() as session:
+        row = SignalEvent(
+            site_id=rig.sites[which]["site_id"],
+            gateway_id=rig.gateways[which][0],
+            kind="node_offline",
+            source=source,
+            payload_json=json.dumps({"note": f"{which} 的板安静了"}),
+        )
+        session.add(row)
+        session.flush()
+        return row.event_id
 
 
-@pytest.mark.skip(reason="告警表与规则引擎属 S6/S8")
+def test_events_written_under_a_are_never_returned_for_b(rig):
+    """判据：`GET /api/events?site=` 必须按场地过滤。S4 挂这条 skip 时表还不存在，S6 落地就补上。"""
+    mine = add_event(rig, "A")
+    theirs = add_event(rig, "B", source="mock")
+
+    def ids(which: str) -> list[int]:
+        row = rig.client.get("/api/events", params={"site": rig.sites[which]["site_id"]})
+        assert row.status_code == 200, row.json()
+        return [item["event_id"] for item in row.json()["rows"]]
+
+    assert ids("A") == [mine]
+    assert ids("B") == [theirs]
+    # 反向也不许通：拿着 B 的 id 到 A 的场地下读，应当像它不存在。
+    probe = rig.client.get(f"/api/events/{theirs}", params={"site": rig.sites["A"]["site_id"]})
+    assert probe.status_code == 404
+
+
+def live_event(site_id: int, event_id: str) -> dict:
+    """一帧与 `capture._publish_event` 同构的事件：外层是帧类型，记录在 `event` 里。"""
+    return {
+        "kind": "event",
+        "site_id": site_id,
+        "ts": "2026-10-29T00:00:00+00:00",
+        "event": {"event_id": event_id, "site_id": site_id, "kind": "node_offline"},
+    }
+
+
+def test_a_ws_subscription_for_one_site_receives_no_frames_from_the_other(rig):
+    """判据：A 场地的 `/ws/live` 订阅收不到 B 场地的事件。
+
+    S4 当时挂 skip 的理由站得住：`/ws/bridge/{ep}` 是按**接入机**划分的透传，跨场地读同一条桥
+    本来就不可能，但那是实现的巧合，不是这条判据的证明。`/ws/live?site=` 是按场地分桶的那一口，
+    所以这里正反两个方向各钉一次，并且钉的是"对面一个字都没有"，不是"对面只收到自己的"。
+    """
+    hub = rig.client.app.state.live
+    main, away = rig.sites["A"]["site_id"], rig.sites["B"]["site_id"]
+
+    async def events_only(page: Page) -> list[str]:
+        """页面已经排出、还没读走的那几条里的事件 id。"""
+        out = []
+        while not page._from_app.empty():
+            message = json.loads((await page.receive())["text"])
+            assert message["kind"] == "event", message
+            out.append(message["event"]["event_id"])
+        return out
+
+    async def take_snapshot(page: Page) -> None:
+        """订阅建立时这层会先回一帧快照：先吃掉它，后面的判定才只关于事件。"""
+        message = await page.receive()
+        assert message["type"] == "websocket.send", message
+        assert json.loads(message["text"])["kind"] == SNAPSHOT
+
+    async def scenario():
+        async with Page(rig.client.app, f"/ws/live?site={main}") as home, Page(
+            rig.client.app, f"/ws/live?site={away}"
+        ) as guest:
+            await home.wait_accepted()
+            await guest.wait_accepted()
+            await take_snapshot(home)
+            await take_snapshot(guest)
+
+            hub.publish(main, live_event(main, "mine"))
+            assert await until(lambda: home._from_app.qsize() == 1)
+            assert guest._from_app.empty(), "主场的事件漏进了客场的桶"
+
+            hub.publish(away, live_event(away, "theirs"))
+            assert await until(lambda: guest._from_app.qsize() == 1)
+
+            assert await events_only(home) == ["mine"]
+            assert await events_only(guest) == ["theirs"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skip(reason="告警表与规则引擎属 S8（S6 只有采集层写的观测事件）")
 def test_alerts_and_their_state_do_not_cross_sites():
     """判据：A 场地的告警不得出现在 B 的列表或计数里。"""
-
-
-@pytest.mark.skip(reason="按场地的 WS 订阅扇出属 S5/S7；今天只有 (gateway, ep) 维度")
-def test_a_ws_subscription_for_one_site_receives_no_frames_from_the_other():
-    """判据：`/ws/live?site=` 落地后，A 的连接收不到 B 的帧。
-
-    今天的 `/ws/bridge/{ep}` 是"某一块物理板"的透传，天然按接入机划分，跨场地读同一条
-    桥本来就不可能——但那是实现的巧合，不是这条判据的证明，所以不当已验。
-    """

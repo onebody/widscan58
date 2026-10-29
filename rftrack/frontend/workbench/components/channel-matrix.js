@@ -1,12 +1,21 @@
 /**
- * 多频道矩阵：一次看若干档的当前 RSSI 与活动态。**数据来自 `demo.js`**，每一行都带
- * `source: "demo"`，页面上那枚 `DEMO` 角标是这句话的可见形式。
+ * 多频道矩阵：一次看当前这块板的若干档电平。**数据来自 `/ws/live` 的那一条连接**
+ * （`live.js` 合并好的最后一帧），不再是 `demo.js`。
  *
- * 点某一行 = 把这一档设为"当前联动频道"（`store.linkTo("channel", slot)`）：单频道详情、
- * RSSI 趋势与事件流都跟着它走。这是 S5 唯一允许的跨组件关系，传的是**频道号**而不是结论。
+ * 三处口径写在这里，是因为它们在 S6 真的变了形：
+ *
+ * - **"档"这一列来自帧，不来自配置。** 固件在 LEVELS 模式一帧只报它正在跳的那几个档
+ *   （`hops`），把 `slots_per_node=8` 画成八行就等于替没测的档编一个值。配置里的 `slots`
+ *   在这里是**筛选**：它只能把看到的那些档缩小，不能凭空加行；被筛掉的档位另说一句"还有 N 档没进帧"。
+ * - **没有"频率"这一列。** 帧里只有整帧共用的 `loKhz`，而"这一档中心是 5732 MHz"要靠频道方案
+ *   表换算——后端到 S6 为止**没有那个端点**（`/api/channel-plans` 属后续阶段）。
+ *   于是这一格把 LO 写在元信息里并明说它是整帧的，不再逐行报频率：报不出来的东西不报。
+ * - **一格里只显示一块板**，就是四级选择器选中的那一块（`select.js` 的唯一判据）。
+ *   八块板 × 八档画在同一张表里看着更全，但"现在看的是哪块板"这个问题在窄屏上就没了答案。
  */
 
-import { fmtClock, fmtDb, fmtMhz, sourceBadge, empty, dot, row, table } from "./parts.js";
+import { fmtClock, fmtDb, fmtKhzAsMhz, sourceBadges, stateNote, statePill, empty, dot, row, table } from "./parts.js";
+import { currentBoard, dataState, levelsDeclared, linkedSlot } from "./select.js";
 
 export const plugin_id = "channel-matrix";
 
@@ -31,45 +40,79 @@ export function create(rt, deps) {
       schedule();
 
       return () => {
-        beat.value; // 依赖：每个节拍重读一次生效值与演示数
+        beat.value; // 依赖：每个节拍重读一次生效值与实时数（重画由这一拍驱动，帧来了不催渲染）
         deps.signal.tick.value; // 依赖：选中/联动/保存之后跟着重算
         const threshold = deps.store.effectiveOf(widget, "threshold_db");
-        const refresh = deps.store.effectiveOf(widget, "refresh_ms") || 200;
-        const slots = deps.store.effectiveOf(widget, "slots") || [...Array(deps.demo.DEMO_SLOTS).keys()];
-        const data = deps.demo.channelMatrix({ slots, threshold, refreshMs: refresh });
-        const linked = deps.store.state.link;
-        const linkedId = linked && linked.kind === "channel" ? linked.id : null;
-        if (!data.channels.length) {
-          return empty(rt, "没有可显示的档位", "实例配置里的 slots 是空表");
+        const wanted = deps.store.effectiveOf(widget, "slots");
+        const board = currentBoard(deps);
+        const shown = dataState(deps, board);
+        const linked = linkedSlot(deps);
+        const row0 = board ? deps.live.node(board.node_id) : null;
+        const present = board ? deps.live.slotsOf(board.node_id) : [];
+        const slots = wanted && wanted.length ? present.filter((slot) => wanted.includes(slot)) : present;
+        const missing = wanted && wanted.length ? wanted.filter((slot) => !present.includes(slot)) : [];
+
+        const meta = h("p", { class: "meta" }, [
+          // 没帧时说"无数据"而不是"来源未知"：后者描述的是一份来路不明的数，而这里的真相是没有数。
+          sourceBadges(rt, row0 ? [row0.source] : []),
+          " ",
+          statePill(rt, shown),
+          ` ${board ? board.display_name : "无板"} · ${row0 ? `模式 ${row0.mode ?? "未报"}` : "无帧"}`,
+          row0 && row0.loKhz !== null && row0.loKhz !== undefined
+            ? h("span", { title: "整帧共用一个 LO，不是每一档的中心频率" }, ` · 帧 LO ${fmtKhzAsMhz(row0.loKhz)}`)
+            : null,
+          row0 ? h("span", { class: "muted" }, ` · ${deps.live.statusLine()}`) : null,
+          " · 离散频道电平，不是频谱",
+        ]);
+        const caveat =
+          row0 && !levelsDeclared(board)
+            ? h("p", { class: "note note--warn" }, "这块板没声明电平帧能力，但帧确实在进：上面画的是帧里的原值，能力声明与实测不一致要以板端为准。")
+            : null;
+
+        if (shown.state !== "live" && shown.state !== "stale") {
+          return h("div", { class: "matrix" }, [meta, shown.text ? empty(rt, shown.text) : null]);
+        }
+        if (!slots.length) {
+          return h("div", { class: "matrix" }, [
+            meta,
+            empty(rt, "这一帧里没有档位", wanted && wanted.length ? `配置里的 ${wanted.length} 档都没进帧` : "帧头报的通道数是 0"),
+          ]);
         }
         return h("div", { class: "matrix" }, [
-          h("p", { class: "meta" }, [
-            sourceBadge(rt, "demo"),
-            ` ${threshold === null || threshold === undefined ? "未设阈值（活动列不判）" : `阈值 ${fmtDb(threshold)} dBFS`}`,
-            " · 离散频道 RSSI，不是频谱",
-          ]),
+          meta,
+          caveat,
+          stateNote(rt, shown),
           table(rt, {
-            columns: ["档", "频率", "RSSI", "活动", "更新"],
-            rows: data.channels.map((item) =>
-              row(
+            columns: ["档", "RSSI", "EMA", "SNR", "活动", "更新"],
+            rows: slots.map((slot) => {
+              const point = row0.channels.get(slot);
+              const active =
+                threshold === null || threshold === undefined || point.rssi === null || point.rssi === undefined
+                  ? null
+                  : point.rssi > threshold;
+              return row(
                 rt,
                 [
-                  String(item.slot + 1),
-                  fmtMhz(item.mhz),
-                  h("td", { class: item.active ? "num num--active" : "num" }, `${fmtDb(item.rssi_db)} dBFS`),
-                  item.active === null
-                    ? h("td", { class: "muted" }, "未判")
-                    : h("td", [dot(rt, item.active)]),
-                  h("td", { class: "muted" }, fmtClock(item.at, "UTC")),
+                  String(slot + 1),
+                  h("td", { class: active ? "num num--active" : "num" }, `${fmtDb(point.rssi)} dBFS`),
+                  h("td", { class: "num" }, fmtDb(point.rssiEma)),
+                  h("td", { class: "num" }, fmtDb(point.snr)),
+                  active === null ? h("td", { class: "muted" }, "未判") : h("td", [dot(rt, active)]),
+                  h("td", { class: "muted" }, fmtClock(point.at, "UTC")),
                 ],
                 {
-                  class: ["clickable", linkedId === item.slot ? "is-linked" : null],
-                  onClick: () => deps.actions.linkChannel(item.slot),
+                  class: ["clickable", linked === slot ? "is-linked" : null],
+                  onClick: () => deps.actions.linkChannel(slot),
                   title: "设为当前联动频道",
                 }
-              )
-            ),
+              );
+            }),
           }),
+          h("p", { class: "note" }, [
+            "EMA/SNR 为空是这一模式确实没测（LEVELS 的 RSSI 模式不发 EMA），不是 0。",
+            missing.length ? ` 配置里的 ${missing.map((slot) => slot + 1).join("、")} 档还没进帧。` : null,
+            threshold === null || threshold === undefined ? " 未设阈值：活动列不判。" : null,
+          ]),
         ]);
       };
     },

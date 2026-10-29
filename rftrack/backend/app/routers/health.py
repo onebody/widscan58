@@ -7,6 +7,12 @@
 `schema_gaps` 一节是 S4 补的：`alembic_version` 只是一行文字，它写着 head 而库里少了
 `workbench_layout` 是完全可能的（半路拷过来的库文件）。那种情况下只比版本号的健康检查会
 说"schema 最新"，而 `/api/layouts` 正在 500——所以版本号说没问题时再核一次结构事实。
+
+`capture` 一节是 S6 补的，它有一个别处没有的约束：**这一节是在线程池里读的，而采集的内存
+状态在事件循环上一直变**。所以 `CapturePipeline.status()` 只读整数与"发布后不再原地改"的
+快照，不迭代活字典——健康检查正好在板子最多、最忙的时候被点开，那时一次
+`dictionary changed size during iteration` 代价最大。`replay` 与 `live` 两节同一条约束、
+同一个做法。
 """
 
 from __future__ import annotations
@@ -87,6 +93,22 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
     if dialer["problem"]:
         problems.append(dialer["problem"])
 
+    retention = request.app.state.retention.status()
+    if retention["problem"]:
+        problems.append(retention["problem"])
+
+    capture = request.app.state.capture.status()
+    if capture["problem"]:
+        problems.append(capture["problem"])
+
+    replay = request.app.state.replay.status()
+    if replay["problem"]:
+        problems.append(replay["problem"])
+
+    live = request.app.state.live.status()
+    if live["problem"]:
+        problems.append(live["problem"])
+
     return {
         "status": "ok" if not problems else "degraded",
         "problems": problems,
@@ -100,6 +122,23 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         "db_path": str(db.path),
         "gateways": gateways,
         "dialer": dialer,
+        # 保留清理这一节：S4 让 `retention_*` 只有"生效值"，S6 起它有了执行者。
+        # 运营者要能问出"上一个小时那次清理，每个场地删了多少、用的是哪一层的天数"——
+        # 没有这一节，"保留策略在跑"就只是一句注释。
+        "retention": retention,
+        # 采集层这一节是 S6 的"数据到底进没进来"的唯一答案：帧数、点数、丢了多少、
+        # 归不了属多少、上一轮刷库成没成，全在这里。`bridge` 说"有没有页在连着块板"，
+        # `capture` 说"连着的时候我们从中读出了什么"——少了后者，"工作台为什么是空的"
+        # 只能靠猜。
+        "capture": capture,
+        # 回放这一节回答"今天页面上这些数是从哪来的"：目录有没有配、演了几份、喂了多少块、
+        # 哪几份因为找不到节点行而一个字都没喂。`source` 恒为 `mock` 是**设计**而不是遗漏——
+        # 回放数据不许有任何被当成实时数据的通路（任务书 §2.3）。
+        "replay": replay,
+        # `/ws/live` 的扇出账：几个场地有人订、每个场地几页、队列里压了多少、丢了几条。
+        # 它是"工作台为什么不动"的第二答案——`capture` 说数据进没进来，这一节说进来了
+        # 有没有送出去。没页在连时 `sites: []` 也是正常形态，所以 `problem` 恒为 None。
+        "live": live,
         # `/ws/bridge` 的实时占用：谁在看哪块板、写权在谁手上。没人在连也要说得出口
         # （`sessions: []`）——"这张表还没做"和"现在确实没页在连"是两个不同的结论。
         "bridge": request.app.state.bridge.status(),

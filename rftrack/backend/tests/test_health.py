@@ -116,3 +116,39 @@ def test_health_does_not_crash_on_an_unmigrated_database(tmp_path):
     # 统计不出来就报 None，不许把"读不到"渲染成"一个都没有"
     assert body["gateways"] is None
     assert body["instance_role"] == "site"
+
+
+# --- 保留清理这一节（S6）------------------------------------------------------
+
+
+def test_health_says_retention_is_not_running_when_it_never_ran(client):
+    """夹具把清理关掉了：这一节必须说"没启用、一轮都没跑"，而不是给一个看着像跑过的壳。"""
+    body = client.get("/api/health").json()
+    assert body["retention"] == {
+        "enabled": False,
+        "interval_s": 3600.0,
+        "runs": 0,
+        "errors": 0,
+        "last_run_at": None,
+        "last_error": None,
+        "last_sites": [],
+        "problem": None,
+    }
+    # 没启用不是故障：`RFTRACK_RETENTION_PURGE_ENABLED=0` 是合法部署形态，
+    # 把它报成 degraded 就等于教运营者忽略 degraded。
+    assert body["status"] == "ok"
+
+
+def test_a_failed_purge_round_makes_health_degraded(client):
+    """上一轮清理真的失败了，就必须出现在 `problems` 里——"保留在跑"这句话得有代价。
+
+    直接改 runner 的内存态而不是真把库锁住：这一条测的是**健康检查读不读这个结论**，
+    失败本身由 `tests/test_retention.py` 的循环用例覆盖。
+    """
+    runner = client.app.state.retention
+    runner.errors = 2
+    runner.last_error = "OperationalError: database is locked"
+    body = client.get("/api/health").json()
+    assert body["status"] == "degraded"
+    assert any("保留清理失败" in p and "locked" in p for p in body["problems"])
+    assert body["retention"]["runs"] == 0, "失败的两轮不得记成跑过两轮"

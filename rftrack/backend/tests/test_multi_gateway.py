@@ -347,4 +347,4 @@ def test_health_names_every_gateway_and_the_live_bridge_sessions(client, three_g
     assert states[three_gateways["pi-stand"]["gateway_id"]]["failures"] == 1
     assert states[three_gateways["pi-tower-a"]["gateway_id"]]["next_delay_s"] == POLL
     assert states[three_gateways["pi-stand"]["gateway_id"]]["next_delay_s"] < POLL
-    assert body["bridge"] == {"sessions": [], "upstreams": 0}
+    assert body["bridge"] == {"sessions": [], "upstreams": 0, "observer_failures": 0}

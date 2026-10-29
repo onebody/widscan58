@@ -78,10 +78,19 @@ function metricsPayload(nch = 3) {
   dv.setUint8(31, 1);
   dv.setUint8(32, 4);
   dv.setUint8(33, nch);
+  // 信道 id 是 **0-based 档位下标**，不是显示用的频道号。三处权威：
+  //   - firmware/src/scan/planner.c:67-68 —— `order[n++] = (uint8_t)j`，j 是 plan 数组下标；
+  //     `scanner.c:317/447` 把 `hop->ch[j]` 原样填进 `.id`，所以线上就是那个下标。
+  //   - firmware/src/scan/profile.h:8 —— `PROFILE_MAX_CHANNELS 8`，合法域只有 0..7；
+  //     web/src/model/store.ts:224 也拿它直接当 `this.channels[c.id]` 的下标用。
+  //   - 显示才是 1-based：web/src/views/channelPlanDialog.ts:132 打的是 `CH${j+1}`。
+  // 这里刻意取 2/4/7：三者都不等于自己的循环下标（钉住"照数组位置解析"的错写法），
+  // 又覆盖首/中/末三档。上一版写的是 3/5/8，其中 8 越界——它会被
+  // tools/make_replay_recording.py 原样抄进合成录制，页面按 0-based 过滤后少画一行。
   const chans = [
-    { id: 3, flags: 1, rssi: -3600, ema: -3550, floor: -5650, snr: 2050, clear: -32768, peak: -3300, peakOff: -1234, centroid: 885000, obwLo: -4000, obwHi: 4400 },
-    { id: 5, flags: 0, rssi: -7000, ema: -7100, floor: -8000, snr: 1000, clear: -8100, peak: -6900, peakOff: 0, centroid: -25000, obwLo: -1000, obwHi: 1200 },
-    { id: 8, flags: 2 | 32, rssi: -150, ema: -140, floor: -6000, snr: 5850, clear: -6200, peak: -100, peakOff: 220000, centroid: 219500, obwLo: -5600, obwHi: 5700 },
+    { id: 2, flags: 1, rssi: -3600, ema: -3550, floor: -5650, snr: 2050, clear: -32768, peak: -3300, peakOff: -1234, centroid: 885000, obwLo: -4000, obwHi: 4400 },
+    { id: 4, flags: 0, rssi: -7000, ema: -7100, floor: -8000, snr: 1000, clear: -8100, peak: -6900, peakOff: 0, centroid: -25000, obwLo: -1000, obwHi: 1200 },
+    { id: 7, flags: 2 | 32, rssi: -150, ema: -140, floor: -6000, snr: 5850, clear: -6200, peak: -100, peakOff: 220000, centroid: 219500, obwLo: -5600, obwHi: 5700 },
   ];
   for (let j = 0; j < nch; j++) {
     const o = H + 26 * j;

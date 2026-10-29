@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Mapping, Protocol
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -31,6 +32,8 @@ from ..config import Settings
 from ..database import Database
 from ..models import Gateway
 from .instance import effective_instance_role
+
+LOG = logging.getLogger("rftrack.ws_bridge")
 
 #: 桥给页面用的唯一一条透传路径（`/node?id=` 是给中继节点本身连进来的，不是给页面的）。
 BRIDGE_WS_PATH = "/serial"
@@ -201,10 +204,17 @@ class BridgeHub:
       不加锁则两页同时首连会各开一条上游。用 per-key 锁（`dict.setdefault` 在单个循环里
       不会被打断），既串行又不互相牵连。
     - **任何一页的死活都不许停掉上游的读取**：读者发送失败就从名单里摘掉，泵继续跑。
+
+    `observer` 是 S6 采集层挂进来的**只读观察者**（`tap`/`untap` 两个方法，鸭子类型）。
+    它对透传的唯一义务是"绝不挡路"：同步入队、不 await、不许让一块板的字节停止到达浏览器，
+    所以这里连它自己抛的异常都吞下来只记一个数。观察者**不开第二条上游、也不握着端点**——
+    那会把 ②a 的 RotorHazard 一直停着（R21）。
     """
 
-    def __init__(self, upstream_factory) -> None:
+    def __init__(self, upstream_factory, observer=None) -> None:
         self.factory = upstream_factory
+        self.observer = observer
+        self.observer_failures = 0
         self._sessions: dict[tuple[int, str], _Session] = {}
         self._opening: dict[tuple[int, str], asyncio.Lock] = {}
 
@@ -264,13 +274,35 @@ class BridgeHub:
         """读上游、扇出。这一段是"live 数据可以丢，读循环不能停"的对客版本。"""
         try:
             while True:
-                await self._fan_out(session, await session.upstream.recv())
+                payload = await session.upstream.recv()
+                # 先给观察者再给页面：这一句是同步入队，不改任何上游状态；顺序与桥发出的
+                # 一致，采集侧看到的字节不会比浏览器晚一帧。
+                self._observe(session.link, payload)
+                await self._fan_out(session, payload)
         except asyncio.CancelledError:
             raise  # 是我们最后一页走时主动收的摊，不必再通知任何人
         except UpstreamClosed as closed:
             await self._drop(key, session, closed.code, closed.reason)
         except Exception as exc:
             await self._drop(key, session, WS_1011_INTERNAL_ERROR, f"upstream_{type(exc).__name__}")
+
+    def _observe(self, link: Link, payload: bytes) -> None:
+        if self.observer is None:
+            return
+        try:
+            self.observer.tap(link, payload)
+        except Exception as exc:  # 观察者坏了不许带走透传：字节照样发给页面
+            self.observer_failures += 1
+            LOG.warning("bridge observer tap failed: %s", exc)
+
+    def _unobserve(self, link: Link) -> None:
+        if self.observer is None:
+            return
+        try:
+            self.observer.untap(link)
+        except Exception as exc:
+            self.observer_failures += 1
+            LOG.warning("bridge observer untap failed: %s", exc)
 
     async def _fan_out(self, session: _Session, payload: bytes) -> None:
         dead = []
@@ -298,6 +330,9 @@ class BridgeHub:
         if session.pump is not None:
             session.pump.cancel()
             await asyncio.gather(session.pump, return_exceptions=True)
+        # 撤观察必须排在泵收摊之后：反过来会留下"untap 之后又 tap 进来一块、这条端点
+        # 再也没有 untap"的孤儿状态——采集层把它当成还在出数的板，安静判定就永远不成立。
+        self._unobserve(session.link)
         try:
             await session.upstream.close(1000, "no more pages")
         except Exception:
@@ -308,6 +343,9 @@ class BridgeHub:
         if self._sessions.get(key) is not session:
             return  # `_leave` 已经收过摊了
         self._sessions.pop(key, None)
+        # 上游自己没了同样要撤观察：这条流再也不会出字节，留着运行态就是让断流判定
+        # 对着一条已经死掉的流一直"安静"。
+        self._unobserve(session.link)
         pages = list(session.readers.items())
         session.readers.clear()
         session.writer = None
@@ -321,8 +359,13 @@ class BridgeHub:
     # --- 对外呈现 ------------------------------------------------------------
 
     def status(self) -> dict:
-        """纯内存快照：谁在看哪块板、写权在谁手上。健康检查每 2 s 读一次，不开会话。"""
+        """纯内存快照：谁在看哪块板、写权在谁手上。健康检查每 2 s 读一次，不开会话。
+
+        `observer_failures` 只说"钩子抛过几次、被我们吞了"：非零意味着采集在掉数据，
+        而透传一切正常——那种情况下页面看着好好的、工作台却是空的，没有这个数就只能猜。
+        """
         return {
             "sessions": [session.as_dict() for session in self._sessions.values()],
             "upstreams": len(self._sessions),
+            "observer_failures": self.observer_failures,
         }
