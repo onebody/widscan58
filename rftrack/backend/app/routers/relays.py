@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..deps import get_session
+from ..deps import get_session, require_writable_session
 from ..models import Relay
 from ..schemas import RelayCreate, RelayOut, RelayUpdate
 from ..services.hierarchy import (
@@ -34,7 +34,9 @@ def list_relays(site: int | None = None, session: Session = Depends(get_session)
 
 
 @router.post("", response_model=RelayOut, status_code=status.HTTP_201_CREATED)
-def create_relay(payload: RelayCreate, session: Session = Depends(get_session)) -> Relay:
+def create_relay(
+    payload: RelayCreate, session: Session = Depends(require_writable_session)
+) -> Relay:
     require_site(session, payload.site_id, must_be_active=True)
     relay = Relay(site_id=payload.site_id, name=payload.name, note=payload.note)
     session.add(relay)
@@ -51,7 +53,7 @@ def read_relay(relay_id: int, session: Session = Depends(get_session)) -> Relay:
 
 @router.patch("/{relay_id}", response_model=RelayOut)
 def update_relay(
-    relay_id: int, payload: RelayUpdate, session: Session = Depends(get_session)
+    relay_id: int, payload: RelayUpdate, session: Session = Depends(require_writable_session)
 ) -> Relay:
     relay = get_relay(session, relay_id)
     changes = payload.model_dump(exclude_unset=True)
@@ -66,7 +68,9 @@ def update_relay(
 
 
 @router.delete("/{relay_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_relay(relay_id: int, session: Session = Depends(get_session)) -> Response:
+def delete_relay(
+    relay_id: int, session: Session = Depends(require_writable_session)
+) -> Response:
     relay = get_relay(session, relay_id)
     ensure_relay_deletable(session, relay)
     session.delete(relay)

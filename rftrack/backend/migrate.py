@@ -1,10 +1,14 @@
-"""数据库迁移入口：备份 → 三场景迁移 → 幂等种子。
+"""数据库迁移入口：备份 → 三场景迁移 → 结构自检。
 
 **严禁重置数据库**：任何 schema 变更都走增量迁移，迁移脚本防御式编写。
 
+这里没有"种子"这一步（S2 的写法一度把它写进过说明）：默认值属于键注册表
+（`app/services/config_layer.py`），场地/中继/接入机只能由运营者建，预置一批假场地等于
+让第一台设备上线时看见三个不存在的地方。
+
 用法：
-    python migrate.py                 # 备份 + 迁移 + 种子
-    python migrate.py --migrate       # 仅迁移
+    python migrate.py                 # 备份 + 迁移 + 自检
+    python migrate.py --migrate       # 仅迁移（含自检）
     python migrate.py --backup        # 仅备份
     python migrate.py --db PATH       # 指定库文件（默认取 RFTRACK_DB_PATH）
 """
@@ -32,7 +36,7 @@ from app.models import Base
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 #: 迁移三场景的名字，写进结果里供调用方与日志区分。
 SCENARIO_CREATE_ALL = "create_all"
-SCENARIO_STAMP_ONLY = "stamp_only"
+SCENARIO_STAMP_BASELINE_THEN_UPGRADE = "stamp_baseline_then_upgrade"
 SCENARIO_UPGRADE = "upgrade"
 TRACKED_TABLE = "app_config"
 
@@ -45,12 +49,23 @@ class MigrationResult:
     to_version: str | None = None
     backup_path: Path | None = None
     error: str | None = None
+    #: 结构自检缺失的东西（表名或 `表.列`）。空列表 = 库和代码期望的结构对得上。
+    missing: tuple[str, ...] = ()
 
 
 def head_revision() -> str | None:
     """alembic 脚本目录里的头版本，作为"代码期望的 schema 版本"。"""
-    script = ScriptDirectory.from_config(_alembic_config(":memory:"))
-    return script.get_current_head()
+    return _script().get_current_head()
+
+
+def base_revision() -> str | None:
+    """链上第一个版本（`001_baseline`）：场景 2 用它作为"这个库当初建成什么样"的起点。"""
+    bases = _script().get_bases()
+    return bases[0] if bases else None
+
+
+def _script() -> ScriptDirectory:
+    return ScriptDirectory.from_config(_alembic_config(":memory:"))
 
 
 def current_version(path: Path | str) -> str | None:
@@ -90,12 +105,45 @@ def url_for(path: Path | str) -> str:
     return f"sqlite:///{Path(path)}"
 
 
+def missing_structure(path: Path | str) -> list[str]:
+    """库里缺了哪些代码期望的表/列——**版本号和结构是两件事**，这里查的是后者。
+
+    存在的理由：`alembic_version` 是一行文字，stamp 一下就能写成 head；而"这个库真是
+    按 003 建过的"只能靠 PRAGMA。缺表不查出来，启动后就是 `/api/layouts` 报 500、
+    健康检查却说 schema 最新——那正是本文件要避免的假绿。
+    """
+    from sqlalchemy import create_engine, inspect
+
+    db = Path(path)
+    if not db.exists():
+        return []
+    engine = create_engine(url_for(db), future=True)
+    try:
+        inspector = inspect(engine)
+        have_tables = set(inspector.get_table_names())
+        missing: list[str] = []
+        for name, table in Base.metadata.tables.items():
+            if name not in have_tables:
+                missing.append(name)
+                continue
+            have = {column["name"] for column in inspector.get_columns(name)}
+            missing.extend(f"{name}.{column.name}" for column in table.columns if column.name not in have)
+        return missing
+    finally:
+        engine.dispose()
+
+
 def run_migrations(path: Path | str = DEFAULT_DB_PATH) -> MigrationResult:
-    """三场景兜底，一个都不许悄悄跳过。
+    """三场景兜底 + 结构自检，一个都不许悄悄跳过。
 
     1. 空库/无核心表 → create_all + stamp head（首次部署）
-    2. 有数据但 alembic 未追踪版本 → 只 stamp，不动数据（严禁重置库）
+    2. 有数据但 alembic 未追踪版本 → stamp 到**基线**再增量 upgrade。直接 stamp head 是
+       假的：那等于宣称库里已经有 `workbench_layout` 这些后来才加的表，而它一个都没有。
+       基线之后由防御式迁移补齐缺的部分，已有表和行都不动（严禁重置库）。
     3. 已有版本记录 → 正常增量 upgrade
+
+    三条路跑完都要过 `missing_structure`：结构不齐就 `ok=False` 把缺的列出来，
+    不许回一个"看起来成功"的结果。
     """
     db = Path(path)
     before = None
@@ -104,23 +152,35 @@ def run_migrations(path: Path | str = DEFAULT_DB_PATH) -> MigrationResult:
         # 必须走同一条"如实上报"的路，而不是把异常抛给启动代码。
         before = current_version(db)
         if not _has_core_tables(db):
-            engine = _create_all(db)
+            _create_all(db)
             _stamp(db, head_revision())
             scenario = SCENARIO_CREATE_ALL
         elif before is None:
-            _stamp(db, head_revision())
-            scenario = SCENARIO_STAMP_ONLY
+            _stamp(db, base_revision())
+            command.upgrade(_alembic_config(url_for(db)), "head")
+            scenario = SCENARIO_STAMP_BASELINE_THEN_UPGRADE
         else:
             command.upgrade(_alembic_config(url_for(db)), "head")
             scenario = SCENARIO_UPGRADE
     except Exception as exc:  # 迁移失败必须如实上报，不得假装成功
         return MigrationResult(ok=False, scenario="failed", error=f"{type(exc).__name__}: {exc}", from_version=before)
+
+    missing = tuple(missing_structure(db))
+    if missing:
+        return MigrationResult(
+            ok=False,
+            scenario=scenario,
+            from_version=before,
+            to_version=current_version(db),
+            error="结构自检缺表/缺列：" + "、".join(missing),
+            missing=missing,
+        )
     return MigrationResult(
         ok=True, scenario=scenario, from_version=before, to_version=current_version(db)
     )
 
 
-def _create_all(db: Path):
+def _create_all(db: Path) -> None:
     from sqlalchemy import create_engine, event
 
     engine = create_engine(url_for(db), future=True)
@@ -133,7 +193,6 @@ def _create_all(db: Path):
 
     Base.metadata.create_all(engine)
     engine.dispose()
-    return engine
 
 
 def _stamp(db: Path, revision: str | None) -> None:

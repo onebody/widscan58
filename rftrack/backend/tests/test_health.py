@@ -1,4 +1,8 @@
-"""`GET /api/health`：版本可比对（R20）、instance_role 缺省为 site、各接入机拨号态如实呈现。"""
+"""`GET /api/health`：版本可比对（R20）、instance_role 缺省为 site、各接入机拨号态如实呈现。
+
+S4 起再加一条：`schema_version` 与 `expected_schema_version` 相等**不等于**库里结构齐全，
+`schema_gaps` 那一节就是专门说这话的。
+"""
 
 import sqlite3
 
@@ -48,6 +52,25 @@ def test_instance_role_reads_the_database_when_a_config_row_exists(client, db_pa
     assert client.get("/api/health").json()["instance_role"] == "aggregator"
 
 
+def test_health_reports_no_schema_gaps_on_a_healthy_database(client):
+    assert client.get("/api/health").json()["schema_gaps"] == []
+
+
+def test_health_names_the_missing_table_that_the_version_row_does_not_cover(client, db_path):
+    """版本号说 head 而库里少一张表：健康检查要说得出缺哪张，不能只报"schema 最新"。
+
+    掉表必须在**第一次**健康检查之前发生——结论按进程缓存（`app.state.schema_gaps`），
+    schema 在运行期不会自己变，所以建完缓存再补表也不该被看见（要变得重启）。
+    """
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE node")
+    body = client.get("/api/health").json()
+    assert body["schema_version"] == body["expected_schema_version"]
+    assert body["schema_gaps"] == ["node"]
+    assert body["status"] == "degraded"
+    assert any("结构不齐" in p and "node" in p for p in body["problems"])
+
+
 def test_health_counts_gateways_by_dial_state(client, db_path):
     site = client.post("/api/sites", json={"name": "主场", "slug": "main"}).json()
     relay = client.post(
@@ -88,6 +111,8 @@ def test_health_does_not_crash_on_an_unmigrated_database(tmp_path):
     assert body["status"] == "degraded"
     assert body["schema_version"] is None
     assert body["problems"]
+    # 版本号都不对时不做结构扫描：缺表结论已经被"先运行 migrate.py"盖过，不该再刷一遍 PRAGMA
+    assert body["schema_gaps"] == []
     # 统计不出来就报 None，不许把"读不到"渲染成"一个都没有"
     assert body["gateways"] is None
     assert body["instance_role"] == "site"

@@ -16,7 +16,9 @@ import migrate
 from . import APP_VERSION
 from .config import Settings
 from .database import Database
-from .routers import bridge, gateways, health, nodes, relays, sites, ws
+from .routers import bridge, gateways, health, layouts, nodes, relays, sites, ws
+# `settings` 这个名字在本函数里是 `Settings` 实例，模块只能带着别名进来。
+from .routers import settings as settings_routes
 from .services.dialer import DialCoordinator, HttpTransport
 from .services.ws_bridge import BridgeHub, WebsocketFactory
 
@@ -51,12 +53,16 @@ def create_app(
     app.state.dialer = dialer
     app.state.bridge = hub
     app.state.head_revision = migrate.head_revision()
+    #: 结构自检的结果留空，由第一次"版本号说没问题"的健康检查去填（见 routers/health.py）。
+    app.state.schema_gaps = None
 
     app.include_router(health.router)
     app.include_router(sites.router)
     app.include_router(relays.router)
     app.include_router(gateways.router)
     app.include_router(nodes.router)
+    app.include_router(settings_routes.router)
+    app.include_router(layouts.router)
     app.include_router(bridge.router)
     app.include_router(ws.router)
     return app

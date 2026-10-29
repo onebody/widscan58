@@ -48,7 +48,7 @@ def test_empty_database_takes_the_create_all_scenario_and_stamps_head(tmp_path):
 
 
 def test_existing_data_without_a_version_row_is_stamped_and_untouched(tmp_path):
-    """场景 2：库里有业务表有数据、alembic 却没记版本——只 stamp，一行数据都不许动。"""
+    """场景 2：库里有业务表有数据、alembic 却没记版本——数据一行不许动，结构要补齐。"""
     db = tmp_path / "legacy.sqlite3"
     Base.metadata.create_all(create_engine(migrate.url_for(db)))
     _insert_site(db, "home")
@@ -56,10 +56,85 @@ def test_existing_data_without_a_version_row_is_stamped_and_untouched(tmp_path):
 
     result = migrate.run_migrations(db)
     assert result.ok, result.error
-    assert result.scenario == migrate.SCENARIO_STAMP_ONLY
+    assert result.scenario == migrate.SCENARIO_STAMP_BASELINE_THEN_UPGRADE
     assert result.from_version is None
     assert result.to_version == migrate.head_revision()
     assert _site_count(db) == 1
+
+
+def test_a_pre_s4_database_without_a_version_row_gets_the_new_tables(tmp_path):
+    """这条钉住"场景 2 直接 stamp head"的假绿。
+
+    库是 S2 那版代码建出来的（只有 `001_baseline` 的结构）、有数据、没记版本。旧写法一步
+    stamp 到 head，于是 `alembic_version` 里写着 003，而 `workbench_layout` 根本不存在：
+    健康检查报"schema 最新"，`/api/layouts` 却在运行时 500。现在先 stamp 基线再增量 upgrade，
+    缺的表由防御式迁移补出来，数据照旧一行不动。
+    """
+    db = tmp_path / "s2_era.sqlite3"
+    from alembic import command
+
+    command.upgrade(migrate._alembic_config(migrate.url_for(db)), "001_baseline")
+    _insert_site(db, "home")
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM alembic_version")  # "有数据无版本"的形状
+        conn.commit()
+    assert "workbench_layout" not in _tables(db)
+
+    result = migrate.run_migrations(db)
+    assert result.ok, result.error
+    assert result.scenario == migrate.SCENARIO_STAMP_BASELINE_THEN_UPGRADE
+    assert "workbench_layout" in _tables(db) and "layout_widget" in _tables(db)
+    assert "local_settings_import" in _tables(db)
+    assert _site_count(db) == 1
+    assert result.missing == ()
+
+
+def test_a_stamped_head_that_is_missing_tables_reports_honestly(tmp_path):
+    """版本号是一行文字，结构是 PRAGMA 事实：对不上就必须 `ok=False` 并说出缺什么。
+
+    版本已经记在 head 时 `upgrade` 是空转——alembic 不重跑用过的脚本，所以掉了的表没有
+    任何代码会补回来，旧写法却照样报"schema 最新"。这就是那条假绿的破口。
+    """
+    db = tmp_path / "lying.sqlite3"
+    assert migrate.run_migrations(db).ok
+    with sqlite3.connect(db) as conn:
+        conn.execute("DROP TABLE node")
+        conn.commit()
+
+    result = migrate.run_migrations(db)
+    assert result.ok is False
+    assert set(result.missing) == {"node"}
+    assert "node" in result.error
+    # 场景与版本照实说：upgrade 确实跑了（它没有可补的脚本），问题出在结构而不是流程。
+    assert result.scenario == migrate.SCENARIO_UPGRADE
+    assert result.to_version == migrate.head_revision()
+
+
+def test_a_missing_table_is_rebuilt_when_its_migration_is_pending(tmp_path):
+    """自愈的条件是"那条脚本还没跑过"：版本落后时，防御式迁移会把缺的表补出来。"""
+    db = tmp_path / "behind.sqlite3"
+    assert migrate.run_migrations(db).ok
+    with sqlite3.connect(db) as conn:
+        conn.execute("DROP TABLE local_settings_import")
+        conn.execute("UPDATE alembic_version SET version_num='002_layout'")
+        conn.commit()
+
+    result = migrate.run_migrations(db)
+    assert result.ok, result.error
+    assert "local_settings_import" in _tables(db)
+    assert result.to_version == migrate.head_revision()
+
+
+
+def test_missing_structure_names_columns_too(tmp_path):
+    db = tmp_path / "half.sqlite3"
+    assert migrate.run_migrations(db).ok
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE app_config RENAME COLUMN settings_json TO nope_json")
+        conn.commit()
+
+    assert migrate.missing_structure(db) == ["app_config.settings_json"]
+
 
 
 def test_versioned_database_takes_the_normal_upgrade_scenario(tmp_path):

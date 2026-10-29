@@ -3,6 +3,10 @@
 未迁移或落后版本的库必须回 `degraded` + 一条可读的 `problems`，而不是崩溃或装作正常。
 `dialer` 一节在 S3 之后来自 `DialCoordinator.status()` 的真实内存状态：没在跑就报没在跑，
 没启用就报没启用——这一节是运营者判断"节点表为什么不更新"的第一入口。
+
+`schema_gaps` 一节是 S4 补的：`alembic_version` 只是一行文字，它写着 head 而库里少了
+`workbench_layout` 是完全可能的（半路拷过来的库文件）。那种情况下只比版本号的健康检查会
+说"schema 最新"，而 `/api/layouts` 正在 500——所以版本号说没问题时再核一次结构事实。
 """
 
 from __future__ import annotations
@@ -17,7 +21,20 @@ from ..deps import get_session
 from ..models import Gateway
 from ..services.instance import effective_instance_role
 
+import migrate
+
 router = APIRouter(tags=["health"])
+
+
+def schema_gaps(app) -> list[str]:
+    """结构事实一个进程查一次并缓存：schema 在运行期不会自己变，要变得重启。
+
+    只在版本号已经说"我是最新的"时才查——版本号本身就落后时，`problems` 里已经有更该先
+    说的结论，那次 PRAGMA 扫描纯属多余（SD 卡上的读放大是 R11 关心的东西）。
+    """
+    if app.state.schema_gaps is None:
+        app.state.schema_gaps = migrate.missing_structure(app.state.settings.db_path)
+    return list(app.state.schema_gaps)
 
 
 def gateway_counts(session: Session) -> dict | None:
@@ -58,6 +75,9 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         problems.append("库里读不到 alembic_version：先运行 python migrate.py")
     elif schema_version != head:
         problems.append(f"schema 版本不一致：库里 {schema_version}，代码期望 {head}")
+    gaps = schema_gaps(request.app) if schema_version == head else []
+    if gaps:
+        problems.append("schema 版本对得上但结构不齐：" + "、".join(gaps))
 
     gateways = gateway_counts(session)
     if gateways is None:
@@ -73,6 +93,7 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         "app_version": APP_VERSION,
         "schema_version": schema_version,
         "expected_schema_version": head,
+        "schema_gaps": gaps,
         "instance_role": effective_instance_role(
             session, request.app.state.settings.instance_role
         ),

@@ -114,19 +114,32 @@ class Rig:
 
 
 def make_rig(db_path, *, instance_role: str = "site", hosts=(HOME,)) -> Rig:
+    """一套库、一个被测 app、若干台已登记的接入机。
+
+    层级由**另一个站点实例**写进库里，再用被测角色的 app 去读：S4 之后汇聚实例对
+    一切写请求回 405，拿被测 app 自己搭脚手架的话，`POST /api/sites` 只会回一个
+    没有 `site_id` 的错误体，测试就死在夹具里——那是角色闸门，不是桥的问题。
+    这也正是真实形态：汇聚实例的库是场地实例写出来的，它自己不动笔。
+    """
+    seed_app = create_app(
+        Settings(db_path=db_path, dialer_enabled=False, instance_role="site"),
+        upstream_factory=FakeFactory(),
+    )
+    seed = TestClient(seed_app)
+    site = seed.post("/api/sites", json={"name": "主场", "slug": "home"}).json()
+    relay = seed.post(
+        "/api/relays", json={"site_id": site["site_id"], "name": "起点塔"}
+    ).json()
+
     factory = FakeFactory()
     app = create_app(
         Settings(db_path=db_path, dialer_enabled=False, instance_role=instance_role),
         upstream_factory=factory,
     )
     client = TestClient(app)
-    site = client.post("/api/sites", json={"name": "主场", "slug": "home"}).json()
-    relay = client.post(
-        "/api/relays", json={"site_id": site["site_id"], "name": "起点塔"}
-    ).json()
     rig = Rig(app, client, factory)
     for index, host in enumerate(hosts):
-        row = client.post(
+        row = seed.post(
             "/api/gateways",
             json={
                 "relay_id": relay["relay_id"],
@@ -327,6 +340,13 @@ def test_the_first_page_to_send_a_command_owns_the_board(db_path):
             await first.wait_accepted()
             await second.wait_accepted()
             await first.send_bytes(b"R")
+            # 写权归属以"第一条命令真的被处理过"为准，不靠 create_task 的调度顺序赌：
+            # 两个页各跑一个任务，先轮到谁是不定的。不卡这道栅栏，第二页有可能反而先拿到
+            # 写权，于是这里等的 busy 关闭永远不来，测试变成偶发超时。
+            # `accept` 先于 `_join`（routers/ws.py:23），所以名单可能还是空的——判据要自己兜住。
+            assert await until(
+                lambda: rig.sessions() and rig.sessions()[0]["writer"] is not None
+            )
             await second.send_bytes(b"S1")
             assert await second.wait_closed() == (1008, "busy")
             # 被拒的那页的命令一个字都不许到达板子：否则"单写者"只是记账好看。

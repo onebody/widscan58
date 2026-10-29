@@ -33,6 +33,18 @@ def conflict(reason: str, **detail) -> HTTPException:
     return HTTPException(status.HTTP_409_CONFLICT, {"reason": reason, **detail})
 
 
+def unprocessable(reason: str, **detail) -> HTTPException:
+    """S4 起用到的第三种口径：**逐字段**说清哪里不对，而不是回一个笼统的 400。
+
+    设置页要靠这份 `errors` 把红点打在具体的键上，所以结构是 `[{key, reason}]` 而不是
+    一句人话——客户端不该去解析自然语言。
+
+    用 `..._CONTENT` 而不是 `..._ENTITY`：同一个数字 422，后者在钉住的 starlette 里已
+    标废弃（每次访问都刷一条 DeprecationWarning，把真实告警埋掉）。
+    """
+    return HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, {"reason": reason, **detail})
+
+
 def get_or_404(session: Session, model: type[ModelT], ident: int, kind: str) -> ModelT:
     obj = session.get(model, ident)
     if obj is None:

@@ -34,7 +34,7 @@ from ..database import Database
 from ..models import Gateway, Relay, Site, utcnow
 from .hierarchy import conflict
 from .ingest import mark_gateway_lost, reconcile
-from .instance import effective_instance_role
+from .instance import effective_current_site_id, effective_instance_role
 
 #: serve.mjs 现在只公布这两个 HTTP 面；探测取前者，不发明新端点。
 ENDPOINTS_PATH = "/api/endpoints"
@@ -284,10 +284,13 @@ class DialCoordinator:
 
     def plan(self) -> Plan:
         """这一轮该拨谁。库里有的每一台都要有个说法，不静默跳过。"""
-        current = self.settings.current_site_id
         try:
             with self.db.scope() as session:
                 role = effective_instance_role(session, self.settings.instance_role)
+                # S4：当前场地以库里那一行为准，环境变量只是未配置时的兜底。
+                current = effective_current_site_id(
+                    session, self.settings.current_site_id
+                )
                 rows = self._rows(session)
                 # 多个场地又没指定当前场地：不猜，整批拒绝（§5 不让"看起来对"的地址混进来）。
                 ambiguous = current is None and len(set(session.scalars(select(Site.site_id)))) > 1

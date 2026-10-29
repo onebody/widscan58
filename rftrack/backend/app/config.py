@@ -73,8 +73,21 @@ class Settings:
     dial_backoff_base_s: float = 1.0
     dial_backoff_max_s: float = 30.0
     #: 本场地实例只拨这个场地的接入机（§5："配置里出现远端场地地址直接报错，不静默接受"）。
-    #: None = 库里只有一个场地时不必指定；S4 起改从 `app_config` 读，这里是环境变量占位。
+    #: None = 库里只有一个场地时不必指定；S4 起 `app_config.current_site_id` 优先于它，
+    #: 环境变量留作部署时的强制覆盖位。
     current_site_id: int | None = None
+    # --- S4：保留与摘要的平台默认值（方案 §3"全部可 env 覆盖，默认值即落地值"）-----------
+    #: 这三条是 SD 磨损 R11 的对策位，`app_config`/`site` 的覆写为空就落到这里。
+    retention_events_days: int = 7
+    retention_summary_days: int = 30
+    retention_log_rows: int = 5000
+    #: 桶宽必须 ≥1 s：比这更细就是把 SD 写穿（§2.4 原文），所以它是校验而不是偏好。
+    summary_bucket_s: int = 1
+    #: 原始 IQ 默认不入库——Pi 只有这一张卡。
+    rawiq_persist: bool = False
+    #: 组件刷新的下限（毫秒）。这是 UI/渲染预算不是实测值：低于它，一屏 24 个组件
+    #: 就把主线程变成刷屏，而帧本来就只按桥的节拍来（默认 200 = 5 fps）。
+    refresh_ms_floor: int = 200
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -91,6 +104,13 @@ class Settings:
             raise ValueError("退避封顶不能小于起始值")
         if self.dial_fails_to_unreachable < 1:
             raise ValueError("dial_fails_to_unreachable 至少 1：0 等于每轮都判死")
+        # 保留策略配成负数不是"更激进地清理"，是"永远清理不动"或"把库删空"，两种都别要。
+        if self.retention_events_days < 0 or self.retention_summary_days < 0:
+            raise ValueError("保留天数不能为负：0 已经表示「只留当下」，负数没有意义")
+        if self.summary_bucket_s < 1:
+            raise ValueError("summary_bucket_s 至少 1 s：桶更细会直接把 SD 卡写穿（R11）")
+        if self.refresh_ms_floor < 1:
+            raise ValueError("refresh_ms_floor 至少 1 ms；0 会让刷新变成紧循环")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -115,6 +135,14 @@ class Settings:
             dial_backoff_base_s=float(source.get("RFTRACK_DIAL_BACKOFF_BASE_S", "1.0")),
             dial_backoff_max_s=float(source.get("RFTRACK_DIAL_BACKOFF_MAX_S", "30.0")),
             current_site_id=_optional_int(source.get("RFTRACK_SITE_ID")),
+            retention_events_days=int(source.get("RFTRACK_RETENTION_EVENTS_DAYS", "7")),
+            retention_summary_days=int(source.get("RFTRACK_RETENTION_SUMMARY_DAYS", "30")),
+            retention_log_rows=int(source.get("RFTRACK_RETENTION_LOG_ROWS", "5000")),
+            summary_bucket_s=int(source.get("RFTRACK_SUMMARY_BUCKET_S", "1")),
+            rawiq_persist=_bool(
+                source.get("RFTRACK_RAWIQ_PERSIST", "0"), "RFTRACK_RAWIQ_PERSIST"
+            ),
+            refresh_ms_floor=int(source.get("RFTRACK_REFRESH_MS_FLOOR", "200")),
         )
 
     @property

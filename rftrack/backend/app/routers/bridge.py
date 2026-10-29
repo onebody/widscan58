@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from ..deps import get_session
+from ..deps import get_session, require_writable_session
 from ..models import Gateway
 from ..services.dialer import ENDPOINTS_PATH, MODE_PATH, TRANSPORT_DETAILS, bridge_url, classify
 from ..services.hierarchy import get_or_404
@@ -62,9 +62,13 @@ def switch_board_mode(
     request: Request,
     body: dict[str, Any],
     gateway: int = Query(...),
-    session: Session = Depends(get_session),
+    session: Session = Depends(require_writable_session),
 ) -> Response:
-    """`{mode: "scan" | "rh"}` 原样转给那台机器的 `/api/mode`，状态码一并转回来。"""
+    """`{mode: "scan" | "rh"}` 原样转给那台机器的 `/api/mode`，状态码一并转回来。
+
+    这是"写"：它会动到物理板子，所以汇聚实例上 405（S4 权限裁定）。`GET /api/endpoints`
+    不走这条——读端点表正是汇聚实例该干的事。
+    """
     row = _gateway(session, gateway)
     result = request.app.state.transport.post(
         bridge_url(row, MODE_PATH), body, request.app.state.settings.probe_timeout_s

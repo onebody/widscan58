@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..deps import get_session
+from ..deps import get_session, require_writable_session
 from ..models import Gateway, Relay
 from ..schemas import GatewayCreate, GatewayOut, GatewayUpdate
 from ..services.dialer import probe_gateway
@@ -53,7 +53,7 @@ def list_gateways(
 
 @router.post("", response_model=GatewayOut, status_code=status.HTTP_201_CREATED)
 def create_gateway(
-    payload: GatewayCreate, session: Session = Depends(get_session)
+    payload: GatewayCreate, session: Session = Depends(require_writable_session)
 ) -> GatewayOut:
     require_relay(session, payload.relay_id, must_be_active=True)
     gateway = Gateway(**payload.model_dump())
@@ -82,7 +82,7 @@ def probe(
 
 @router.patch("/{gateway_id}", response_model=GatewayOut)
 def update_gateway(
-    gateway_id: int, payload: GatewayUpdate, session: Session = Depends(get_session)
+    gateway_id: int, payload: GatewayUpdate, session: Session = Depends(require_writable_session)
 ) -> GatewayOut:
     """`dial_state`/`dial_reason`/`last_seen` 是 probe 的产出，不在可写字段里。"""
     gateway = get_gateway(session, gateway_id)
@@ -101,7 +101,9 @@ def update_gateway(
 
 
 @router.delete("/{gateway_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_gateway(gateway_id: int, session: Session = Depends(get_session)) -> Response:
+def delete_gateway(
+    gateway_id: int, session: Session = Depends(require_writable_session)
+) -> Response:
     gateway = get_gateway(session, gateway_id)
     ensure_gateway_deletable(session, gateway)
     session.delete(gateway)
