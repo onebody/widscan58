@@ -597,6 +597,122 @@ def test_a_crashing_plugin_is_marked_failing_without_silencing_the_others(client
     ]
 
 
+def test_all_three_builtin_plugins_survive_one_tick_together(client):
+    """启用全部内置插件的**新装实例**必须三支都在跑——2026-10-30 真机上它是两支当场停摆。
+
+    生效配置的缓存早先按"这一拍谁先搬队"截断，于是读一把键的 `anomaly-detector` 把该场地的缓存
+    建成 `['anomaly_rise_db']`，后面两支各自 `KeyError` 在自己的第一把键上。这条用例的覆盖力全部
+    来自两点，缺一就退回假绿：
+
+    - **真实现**，不是注入的假插件——只有真的才带着真 `CONFIG_KEYS`，而键集各不相同；
+    - **同一次 `run_once()` 里三支都被喂**——`_runs` 的迭代序就是注册表行序（元组序），
+      所以"小键集的先跑"这个致命顺序是自然成立的，不用手工摆。
+
+    判据不看"有没有判定"（单帧凑不齐基线、也凑不齐两处同时），只看**没有人带着错误停下来**。
+    """
+    where = add_site(client, "alpha", "A场", 5)
+    for plugin_id in BUILTINS:
+        enable_plugin(client, plugin_id)
+    runtime = runtime_for(client)
+    runtime.refresh()
+
+    assert runtime.offer(
+        one_batch(gateway_id=where["gateway"], node_id=where["node"], seq=1, ts=moment(0))
+    ) == "queued"
+    runtime.run_once()
+
+    for plugin_id in BUILTINS:
+        state = state_of(client, plugin_id)
+        assert (state.status, state.errors, state.last_error) == ("running", 0, None), plugin_id
+    assert runtime.errors == 0 and runtime.last_error is None
+    assert runtime.status()["failing_plugins"] == []
+    # 缓存那份是**整张生效表**，不是某一家的键集——截断过一次就是这次的成因。
+    assert "threshold_db" in runtime._configs[where["site"]][0]
+    assert "anomaly_rise_db" in runtime._configs[where["site"]][0]
+
+
+def test_a_key_the_registry_cannot_supply_is_the_runtimes_own_failure(client):
+    """插件声明了配置层给不出的键：算运行时的错，不算那支规则的错。
+
+    分界的意义是"运营者该去查哪里"。让它变成插件 `failing`，他会去调阈值——而阈值根本没被读到；
+    而 `_config_for` 里那个 `if key in effective` 的静默过滤更糟：插件在自己内部 `KeyError`，
+    流水里只留下一个键名，看不出是声明与注册表对不上。现在它抛在边界上，进 `batches_lost` 与
+    `problem()`，库里那一行一个字都不动。
+    """
+
+    class DeclaresAnImpossibleKey:
+        CONFIG_KEYS = ("threshold_db", "not_a_registry_key")
+
+        def feed(self, batch, config):
+            raise AssertionError("拿不到配置就不该被喂")
+
+    where = add_site(client, "alpha", "A场", 5)
+    enable_plugin(client, "alert-engine")
+    runtime = runtime_for(client, implementations={"alert-engine": DeclaresAnImpossibleKey})
+    client.app.state.plugins = runtime
+    runtime.refresh()
+    assert runtime.offer(
+        one_batch(gateway_id=where["gateway"], node_id=where["node"], seq=1, ts=moment(0))
+    ) == "queued"
+
+    runtime.run_once()
+
+    state = state_of(client, "alert-engine")
+    assert (state.status, state.errors) == ("stopped", 0), "配置层的缺口被记成了插件的失败"
+    assert runtime.batches_lost == 1 and runtime.errors == 1
+    assert "not_a_registry_key" in (runtime.last_error or "")
+    assert runtime.status()["failing_plugins"] == []
+    assert "not_a_registry_key" in client.get("/api/health").json()["plugins"]["problem"]
+
+
+def test_a_plugin_that_stopped_retrying_makes_health_say_so(client):
+    """退避耗尽之后健康检查必须继续说话：那是**现在**坏着，不是历史上有过失败。
+
+    真机上这一条是 11 次轮询全 `ok`——耗尽后它不再尝试，于是每轮都"没有新失败"，只看 `last_error`
+    的 `problem()` 把两支永久停摆的插件读成了正常。判据要连"复位"那一半一起测：用户点名停用之后
+    这句必须收回去，否则 degraded 会变成没人信的常驻噪声。
+    """
+
+    where = add_site(client, "alpha", "A场", 5)
+    enable_plugin(client, "alert-engine")
+    runtime = runtime_for(client, implementations={"alert-engine": AlwaysFails})
+    # 把健康检查指到**这一支真的跑过退避的**运行时上：夹具那个 app 自带的四条后台循环是关着的，
+    # `app.state.plugins` 那份内存态从没崩过，用它断言"页面看不看得见"等于什么都没测。
+    client.app.state.plugins = runtime
+    runtime.refresh()
+    for seq in (1, 2, 3, 4):
+        assert runtime.offer(
+            one_batch(gateway_id=where["gateway"], node_id=where["node"], seq=seq,
+                      ts=moment(seq * 1000))
+        ) == "queued"
+        runtime.run_once(now=moment((seq - 1) * 60_000))
+
+    body = client.get("/api/health").json()
+    assert body["status"] == "degraded"
+    assert body["plugins"]["failing_plugins"] == [
+        {
+            "plugin_id": "alert-engine",
+            "last_error": "RuntimeError: 规则里炸了",
+            # 四帧之间隔着一分钟，退避（1/2/5/30 s）早到点，所以每一次都是"到点重试又崩"，
+            # 到第四次就是耗尽——这一句必须是 False，否则页面会说"再等等它自己会好"。
+            "retrying": False,
+        }
+    ]
+    assert body["plugins"]["problem"] in body["problems"]
+    assert "alert-engine" in body["plugins"]["problem"]
+    assert "退避已耗尽" in body["plugins"]["problem"]
+
+    with client.app.state.db.scope() as session:
+        session.get(PluginRegistry, "alert-engine").enabled = False
+    runtime.refresh()
+    # 空一拍才收回：`last_error` 说的是"运行时最近一次失败"，规则崩也算（`problem()` 那句明写了
+    # "规则崩溃与库读写都算"），停用这个动作本身不该替它改口——后台循环跑成一轮干净的才该。
+    runtime.run_once(now=moment(600_000))
+    body = client.get("/api/health").json()
+    assert body["plugins"]["failing_plugins"] == []
+    assert body["plugins"]["problem"] is None, "停用并跑干净之后还在报 degraded"
+
+
 def test_a_repeatedly_crashing_plugin_gets_three_restarts_and_then_goes_quiet(client):
     """退避重启有上限，而且"没到点"与"耗尽之后"这两段都必须真的不动。
 
@@ -1558,6 +1674,7 @@ def test_a_switched_off_runtime_shows_an_honest_plugins_section(client):
         "refused": None,
         "tick_interval_s": TICK_INTERVAL_S,
         "enabled_plugins": [],
+        "failing_plugins": [],
         "drain_chunk": DRAIN_CHUNK,
         "config_ttl_s": CONFIG_TTL_S,
         "refreshes": 0,

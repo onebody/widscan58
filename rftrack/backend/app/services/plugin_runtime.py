@@ -159,6 +159,13 @@ class PluginRuntime:
         self.tick_interval_s = TICK_INTERVAL_S
         self._runs: dict[str, _Run] = {}
         self._configs: dict[int, tuple[dict[str, Any], float]] = {}
+        #: 启用中且**这一轮崩过**的插件：`plugin_id -> (错误文本, 还会不会自己重试)`。
+        #: 它是 `plugin_state.status='failing'` 的内存镜像，不是第二份事实：只在 `_write` 已经
+        #: 把库里那一行写成 `failing` 的地方跟着写，退避成功跑干净一轮就跟着销。为什么要镜像——
+        #: `status()` 不许开库（健康检查在另一个线程），而 `problem()` 只看 `last_error` 的话，
+        #: "它坏了并且不再试了"与"它好了"长得一模一样（2026-10-30 真机两支永久 `failing`、
+        #: 11 次轮询全 `ok` 就是这个形状）。
+        self._failing: dict[str, tuple[str, bool]] = {}
         #: 只读快照，`offer()`/`run_once()` 换、`status()` 读——与 `CapturePipeline._queue_stats`
         #: 同一条理由：健康检查在另一个线程里迭代它。
         self._queue_stats: tuple[dict[str, Any], ...] = ()
@@ -336,6 +343,9 @@ class PluginRuntime:
         }
         self._runs = runs
         self.refreshes += 1
+        # 停用就是复位现场：镜像跟着库里那一行回 `stopped`，不留着一句"它坏着"给已经不管它的页面看。
+        for plugin_id in gone:
+            self._failing.pop(plugin_id, None)
         self._publish_queues()
         if gone:
             self._mark_disabled(gone, self._retire(gone, moment))
@@ -627,18 +637,31 @@ class PluginRuntime:
     def _config_for(self, site_id: int, keys: tuple[str, ...]) -> dict[str, Any]:
         """这批数据所属场地的生效值（默认 < 全局 < 场地），带 `CONFIG_TTL_S` 的缓存。
 
-        缓存的键只有场地：插件读的那几把都是 SITABLE 的，布局与实例两层与它们无关（那两层管的
-        是刷新周期与时间窗，属页面）。
+        缓存的是**整个场地的生效值**，每支插件拿到的那份按它自己声明的 `CONFIG_KEYS` 现切。
+        早先这里是"截断完再存"，于是缓存键只剩场地、内容却取决于**这一拍谁先搬队**：读一把键的
+        插件先把条目建成那一把，后面读两把三把的各自 `KeyError` 在自己的第一把键上（2026-10-30
+        真机：启用全部插件即三支死两支，而 health 全程 `ok`）。少一维缓存键的代价在这里不可见、
+        只可复现，所以判据留在测试里：`CONFIG_KEYS` 少的必须先跑。
+
+        声明了而生效值里没有，是代码与键注册表对不上，不是插件的错：抛出来让 `_consume` 把它
+        归到**运行时**那本账（`batches_lost` + `last_error` + `problem()`），而不是让规则在
+        自己内部炸成一插件 `failing`——那样运营者会去查阈值，而阈值根本没被读到。
         """
         cached = self._configs.get(site_id)
-        if cached is not None and monotonic() - cached[1] < CONFIG_TTL_S:
-            return cached[0]
-        with self.db.scope() as session:
-            site = session.get(Site, site_id)
-            effective = config_layer.effective_for_site(session, self.settings, site)
-        values = {key: effective[key]["value"] for key in keys if key in effective}
-        self._configs[site_id] = (values, monotonic())
-        return values
+        if cached is None or monotonic() - cached[1] >= CONFIG_TTL_S:
+            with self.db.scope() as session:
+                site = session.get(Site, site_id)
+                effective = config_layer.effective_for_site(session, self.settings, site)
+            cached = ({name: row["value"] for name, row in effective.items()}, monotonic())
+            self._configs[site_id] = cached
+        full = cached[0]
+        missing = [key for key in keys if key not in full]
+        if missing:
+            raise KeyError(
+                f"场地 {site_id} 的生效配置里没有 {missing}："
+                f"插件声明的 `CONFIG_KEYS` 与配置层对不上"
+            )
+        return {key: full[key] for key in keys}
 
     # --- 落库 ------------------------------------------------------------------
 
@@ -719,6 +742,16 @@ class PluginRuntime:
             )
             state.updated_at = moment
 
+        # 镜像跟着**已经提交的那一行**动，不跟着意图动：`_write` 在提交前抛出就等于库里那行没改，
+        # 内存里也不该先替它承认"坏着"。`expire_on_commit=False` 让这两个属性在 `with` 块外仍可读。
+        if state.status == "failing":
+            self._failing[run.plugin_id] = (
+                run.last_error or "规则抛了异常，没带回错误文本",
+                state.next_retry_at is not None,
+            )
+        else:
+            self._failing.pop(run.plugin_id, None)
+
     def _note_error(self, run: _Run, exc: Exception) -> None:
         self.last_error = f"{type(exc).__name__}: {exc}"
         run.last_error = self.last_error
@@ -741,6 +774,14 @@ class PluginRuntime:
             "refused": "aggregator_role" if self.role == "aggregator" else None,
             "tick_interval_s": self.tick_interval_s,
             "enabled_plugins": sorted(self._runs),
+            "failing_plugins": [
+                {
+                    "plugin_id": plugin_id,
+                    "last_error": last_error,
+                    "retrying": retrying,
+                }
+                for plugin_id, (last_error, retrying) in sorted(self._failing.items())
+            ],
             "drain_chunk": DRAIN_CHUNK,
             "config_ttl_s": CONFIG_TTL_S,
             "refreshes": self.refreshes,
@@ -758,15 +799,27 @@ class PluginRuntime:
         }
 
     def problem(self) -> str | None:
-        """只在"最近一轮真的坏了"时说话，与 `capture`/`retention` 同一条纪律。
+        """只在"现在真的坏着"时说话，与 `capture`/`retention` 同一条纪律。
 
         全停用不是故障（那是 S7 的回滚形态）；累计 `errors` 也不是——它只会涨，说不了"现在坏不坏"。
-        这一条说的是**运行时**这一层：规则崩溃另有 `plugin_state.last_error` 与 `plugin_log`，
-        页面要看的是"哪一支"，健康检查要问的是"这台还在不在干活"。
+
+        有两个"现在"：运行时这一层最近一轮的失败（`last_error`，跑成一轮就收回），以及**启用中的
+        插件此刻正停在 `failing`**（`_failing` 那份镜像）。第二个是 2026-10-30 真机补的：退避耗尽
+        之后它不再尝试，于是每轮都"没有新失败"，只看 `last_error` 的健康检查会把两支永久停摆的插件
+        报成 `ok`——"坏了并且不再试了"与"好了"必须是两个不同的现象，否则 degraded 这个字迟早没人信。
         """
-        if self.last_error is None:
-            return None
-        return (
-            f"插件运行时累计 {self.errors} 次失败（规则崩溃与库读写都算），"
-            f"丢掉 {self.batches_lost} 批；最近一次：{self.last_error}"
-        )
+        parts: list[str] = []
+        if self.last_error is not None:
+            parts.append(
+                f"插件运行时累计 {self.errors} 次失败（规则崩溃与库读写都算），"
+                f"丢掉 {self.batches_lost} 批；最近一次：{self.last_error}"
+            )
+        if self._failing:
+            detail = "、".join(
+                f"{plugin_id}"
+                f"（{'退避中，到点还会自己重试' if retrying else '退避已耗尽，等用户重新启用'}"
+                f"：{last_error}）"
+                for plugin_id, (last_error, retrying) in sorted(self._failing.items())
+            )
+            parts.append(f"{len(self._failing)} 支启用中的插件正处在 failing：{detail}")
+        return "；".join(parts) or None
