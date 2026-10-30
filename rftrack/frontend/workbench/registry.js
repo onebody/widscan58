@@ -36,6 +36,19 @@ export const COMPONENTS = [
     links: "channel",
   },
   {
+    id: "combined-spectrum",
+    name: "综合电平分线",
+    summary: "多节点拉到同一张图上分线对比：一条线一个节点，横轴是档位号——离散频道电平，不是连续频谱",
+    size: { w: 6, h: 4 },
+    min: { w: 4, h: 3 },
+    source: "live",
+    // 数据就是整页那条 `/ws/live`（推送里带全场地的帧），勾选哪些节点由 `nodes` 生效值定，
+    // 没勾回落到当前单板；`slots` 生效值当横轴筛选。名字里没有"频谱"两个字是刻意的：
+    // 真频谱要频率分辨数据，`spectrum-view` 的 PLANNED 条目还在那里等着。
+    needs: ["live"],
+    links: "channel",
+  },
+  {
     id: "rssi-trend",
     name: "RSSI 趋势",
     summary: "一段时间内的 RSSI 变化（离散频道序列，不是频谱）",
@@ -97,6 +110,18 @@ export const COMPONENTS = [
     source: "api",
     // 读的是 /api/targets（按场地的候选目标）。它不订推送、也不必挑一块板——只要有
     // 场地上下文就说得出话，所以挂在 `hierarchy` 这条通路上。
+    needs: ["hierarchy"],
+    links: "node",
+  },
+  {
+    id: "alert-feed",
+    name: "告警信息流",
+    summary: "规则引擎推出来等人处置的告警：短语 + 展开说明、判定依据与处置（确认/静默/解决）",
+    size: { w: 6, h: 5 },
+    min: { w: 4, h: 4 },
+    source: "api",
+    // 读的是 /api/alerts（按场地的处置窗）。与 target-inspector 同一条口径：不订推送、
+    // 不挑板，只要有场地上下文就说得出话，所以也挂在 `hierarchy` 上。
     needs: ["hierarchy"],
     links: "node",
   },

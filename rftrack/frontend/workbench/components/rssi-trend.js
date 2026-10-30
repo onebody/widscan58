@@ -11,6 +11,9 @@
  *   把它当 0 或当上一个值画进去，曲线就会在安静时段贴底，而"贴底"读起来像"信号很弱"。
  * - **轮询有下限**：这一口读的是库，不是内存。200 ms 刷一次不会让曲线更新（桶宽本来就是
  *   秒级），只会把 SQLite 变成这一页的节拍器。所以下限 1 s，与格子生效的 `refresh_ms` 取大。
+ * - **`nodes` 配置勾了节点就分线对比**：一次请求（后端 `nodes` 参数做并集）拿回所有节点的
+ *   行，按 `node_id` 折成一条线一个节点；所有线共用同一档（联动档或 `slots` 首档），
+ *   因为"同一档跨节点比高低"才是分线要回答的问题——各看各的档是另一张图的事。
  *
  * 绘图分工沿用 S5：`model()` 把行折成坐标、`draw()` 落笔，两步都在 `paint()` 里，因为
  * **画布的真实尺寸只有那一刻才知道**（拖动格子会立刻改宽度，而像素坐标依赖它）。
@@ -18,7 +21,7 @@
 
 import { colorsFrom, draw, model, resizeCanvas } from "../chart.js";
 import { fmtClock, sourceBadges, stateNote, statePill, empty } from "./parts.js";
-import { currentBoard, dataState, linkedSlot } from "./select.js";
+import { currentBoard, dataState, linkedSlot, nodeScope } from "./select.js";
 
 export const plugin_id = "rssi-trend";
 
@@ -63,10 +66,10 @@ export function create(rt, deps) {
       /** 一次取数。`site`/`node`/`slot` 全部取自**发起那一刻**的上下文，回来时换了就不采纳。 */
       async function load() {
         if (released || inFlight) return;
-        const board = currentBoard(deps);
         const site = deps.context.state.siteId;
         const slot = slotOf();
-        if (board === null || site === null || site === undefined || slot === null) {
+        const scope = nodeScope(deps, widget);
+        if (!scope.boards.length || site === null || site === undefined || slot === null) {
           history.value = null;
           failure.value = null;
           return;
@@ -76,7 +79,11 @@ export function create(rt, deps) {
         const from = new Date((Date.now() - rangeS * 1000) - 1000).toISOString();
         inFlight = true;
         try {
-          const answer = await deps.api.samplesSummary({ site, node: board.node_id, slot, from, limit: points });
+          // 多节点分线对比是**一次**请求（后端 `nodes` 参数做并集），不是每节点各打一口。
+          const params = { site, slot, from, limit: points };
+          if (scope.multi) params.nodes = scope.boards.map((board) => board.node_id).join(",");
+          else params.node = scope.boards[0].node_id;
+          const answer = await deps.api.samplesSummary(params);
           if (released) return;
           if (deps.context.state.siteId !== site) return; // 换场地之后的迟到答案：丢掉
           history.value = answer;
@@ -115,39 +122,52 @@ export function create(rt, deps) {
         beat.value;
         deps.signal.tick.value;
         const threshold = deps.store.effectiveOf(widget, "threshold_db");
-        const board = currentBoard(deps);
+        const scope = nodeScope(deps, widget);
+        const board = scope.multi ? scope.boards[0] : currentBoard(deps);
         const shown = dataState(deps, board);
         const slot = slotOf();
         const answer = history.value;
         const rows = answer ? answer.rows : [];
         const usable = rows.filter((row) => row.rssi_mean !== null && row.rssi_mean !== undefined);
         const dropped = rows.length - usable.length;
-        const samples = usable.map((row) => ({
-          tick: row.ts_bucket,
-          rssi_db: row.rssi_mean,
-          at: row.last_at,
-          source: row.source,
-        }));
-        pending = { samples, threshold };
+        // 行按 node_id 折成分线：勾选节点按配置顺序出线（颜色顺序稳定），
+        // 答案里冒出的配置外节点（刚被删之类）也画，但标 #id 不冒充勾选名单。
+        const byNode = new Map();
+        for (const row of usable) {
+          if (!byNode.has(row.node_id)) byNode.set(row.node_id, []);
+          byNode.get(row.node_id).push({
+            tick: row.ts_bucket,
+            rssi_db: row.rssi_mean,
+            at: row.last_at,
+            source: row.source,
+          });
+        }
+        const extras = [...byNode.keys()].filter((id) => !scope.boards.some((b) => b.node_id === id));
+        const series = [
+          ...scope.boards.map((b) => ({ label: b.display_name, samples: byNode.get(b.node_id) || [] })),
+          ...extras.map((id) => ({ label: `#${id}`, samples: byNode.get(id) })),
+        ];
+        pending = { series, threshold };
         // 渲染末尾就画一次：`onUpdated` 要等这一帧提交，而这里的模型已经算好了。
         rt.nextTick(paint);
-        const newest = samples[samples.length - 1];
+        const newest = usable.length ? usable[usable.length - 1] : null;
+        const names = series.filter((group) => group.samples.length).map((group) => group.label);
 
         const meta = h("p", { class: "meta" }, [
           answer && answer.sources.length ? sourceBadges(rt, answer.sources) : null,
           statePill(rt, shown),
-          ` ${board ? board.display_name : "无板"}`,
+          scope.multi ? ` ${scope.boards.length} 个节点分线${names.length ? `：${names.join("、")}` : ""}` : ` ${board ? board.display_name : "无板"}`,
           slot === null || slot === undefined ? " · 没有联动的档位" : ` · 第 ${slot + 1} 档`,
           answer ? ` · 桶宽 ${answer.bucket} s · ${usable.length} 点` : " · 还没取到桶",
-          newest ? h("span", { class: "muted" }, ` · 最新 ${fmtClock(newest.at, "UTC")}`) : null,
+          newest ? h("span", { class: "muted" }, ` · 最新 ${fmtClock(newest.last_at, "UTC")}`) : null,
         ]);
         // 取数失败时曲线继续画上一答的那一段，但这句话必须挂在图上：静默沿用旧读数
         // 与"这是新数"之间的差别，页面上看不出来，而运营者据它判断板子是不是安静了。
         const errorLine = failure.value
-          ? h("p", { class: "warn" }, `取数失败：${failure.value.reason}${samples.length ? " · 曲线沿用上一次的成功读数" : ""}`)
+          ? h("p", { class: "warn" }, `取数失败：${failure.value.reason}${usable.length ? " · 曲线沿用上一次的成功读数" : ""}`)
           : null;
 
-        if (!samples.length) {
+        if (!usable.length) {
           return h("div", { class: "trend" }, [
             meta,
             errorLine,
@@ -164,9 +184,10 @@ export function create(rt, deps) {
           meta,
           errorLine,
           stateNote(rt, shown),
-          h("canvas", { ref: canvas, class: "chart", "aria-label": `第 ${(slot ?? 0) + 1} 档 RSSI 趋势（摘要桶均值）` }),
+          h("canvas", { ref: canvas, class: "chart", "aria-label": `第 ${(slot ?? 0) + 1} 档 RSSI 趋势（摘要桶均值${scope.multi ? "，多节点分线" : ""}）` }),
           h("p", { class: "note" }, [
             "横轴：桶起点（unix 秒）；纵轴：该桶内 dBFS 均值。虚线是阈值，不是数据。",
+            scope.multi ? ` 每个节点一条线（颜色顺序即勾选顺序）。` : null,
             dropped ? ` ${dropped} 个桶没有均值（那些桶里一个点都没有），已从折线里跳过。` : null,
             answer && answer.truncated ? ` 行数已达上限 ${answer.limit}，只画最近这一段。` : null,
           ]),

@@ -337,8 +337,74 @@ def test_slot_and_node_narrow_the_rows_together(rig, client):
     add_summary(client, a, base, slot=3, rssi_mean=-55)
 
     body = summary(client, site=a["site"], node=a["node"], slot=3)
-    assert body["filters"] == {"node": a["node"], "slot": 3}
+    assert body["filters"] == {"node": a["node"], "nodes": [a["node"]], "slot": 3}
     assert [row["rssi_mean"] for row in body["rows"]] == [-55]
+
+
+# --- 四b：nodes 参数多节点并集（A 步组合选择层）--------------------------------
+
+
+def _extra_node(client, where: dict, name: str) -> int:
+    """同场地再摆一块板：多节点并集是**场地内**跨板取数，跨场地该被 422 挡住（另有用例）。"""
+    with client.app.state.db.scope() as session:
+        node = Node(
+            gateway_id=where["gateway"],
+            display_name=name,
+            transport_kind="usb-native",
+            transport_addr=f"/dev/tty-extra-{name}",
+            status="active",
+        )
+        session.add(node)
+        session.flush()
+        return node.node_id
+
+
+def test_nodes_param_unions_multiple_nodes(rig, client):
+    a, b = rig["A"], rig["B"]
+    second = _extra_node(client, a, "A场的第二块板")
+    base = now_epoch() - 60
+    add_summary(client, a, base, slot=0, rssi_mean=-70)
+    with client.app.state.db.scope() as session:
+        session.add(
+            SampleSummary(
+                node_id=second,
+                slot=0,
+                ts_bucket=base,
+                site_id=a["site"],
+                gateway_id=a["gateway"],
+                bucket_s=1,
+                source="real",
+                sample_count=4,
+                ema_count=4,
+                rssi_mean=-55,
+                last_at=datetime.fromtimestamp(base, timezone.utc),
+            )
+        )
+
+    body = summary(client, site=a["site"], nodes=f"{a['node']},{second}", slot=0)
+    assert body["filters"]["nodes"] == [a["node"], second], "逗号表拆开、去重、按序回显"
+    assert sorted(row["rssi_mean"] for row in body["rows"]) == [-70, -55], "同场地两块板的行都回来（分线对比的原料）"
+    assert {row["node_id"] for row in body["rows"]} == {a["node"], second}
+
+
+def test_nodes_param_repeats_collapse_but_stay_in_order(rig, client):
+    a = rig["A"]
+    body = summary(client, site=a["site"], nodes=f"{a['node']},{a['node']}")
+    assert body["filters"]["nodes"] == [a["node"]], "重复 id 合并，不重复校验也不重复过滤"
+
+
+def test_nodes_param_rejects_node_of_another_site(rig, client):
+    a, b = rig["A"], rig["B"]
+    row = client.get("/api/samples/summary", params={"site": a["site"], "nodes": f"{a['node']},{b['node']}"})
+    assert row.status_code == 422
+    assert row.json()["detail"]["reason"] == "node_not_in_site", "nodes 里的每个 id 都要过场地校验"
+
+
+def test_nodes_param_rejects_non_numeric_ids(rig, client):
+    a = rig["A"]
+    row = client.get("/api/samples/summary", params={"site": a["site"], "nodes": "abc"})
+    assert row.status_code == 422
+    assert row.json()["detail"]["reason"] == "wrong_type"
 
 
 # --- 五：`?site=` 缺省落到当前场地 --------------------------------------------

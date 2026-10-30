@@ -74,7 +74,7 @@ class KeySpec:
     """一个可配置键的全部事实：谁能设、合法取值长什么样、默认从哪来。"""
 
     name: str
-    kind: str  # choice | int | float | bool | text | slots | object
+    kind: str  # choice | int | float | bool | text | slots | nodes | object
     #: 允许覆写的层（`default` 不在里面，它是兜底而不是可写层）。
     layers: tuple[str, ...]
     choices: tuple[str, ...] | None = None
@@ -141,6 +141,11 @@ KEYS: tuple[KeySpec, ...] = (
     KeySpec(
         "slots", "slots", WIDGETABLE, minimum=0, maximum_from_settings="slots_per_node", default=None
     ),
+    # `nodes` 是组合显示那一路的组件级多选（A 步）：哪些节点的数据拉进这一格。只校形状
+    # （正整数、去重、非空）——"id 存不存在、属不属于这块场地"发生在读数口
+    # （`/api/samples/summary` 的 422 `node_not_in_site`）与前端按场地过滤，配置层没有
+    # DB 会话，硬校验就是假话。没设（None）＝沿用整页选中的那块板。
+    KeySpec("nodes", "nodes", WIDGETABLE, default=None),
     KeySpec("history_metric", "choice", WIDGETABLE, choices=("ema", "rssi"), default="ema"),
     KeySpec("show_average", "bool", WIDGETABLE, default=True),
     # 保留天数：S6 起了执行者（`retention.purge_site` 读的就是这里的生效值，两条 DELETE 都带
@@ -290,6 +295,8 @@ def validate(settings: Settings, key: str, value: Any) -> str | None:
         return None
     if spec.kind == "slots":
         return _validate_slots(settings, value)
+    if spec.kind == "nodes":
+        return _validate_nodes(value)
     if spec.kind == "object":
         if not isinstance(value, dict):
             return "wrong_type"
@@ -324,6 +331,18 @@ def _validate_slots(settings: Settings, value: Any) -> str | None:
     # 超出频道数就是"想要还不支持的频道"（40+ 属固件 M3）：拒，不截断也不假装能跑。
     if any(s < 0 or s >= high for s in value):
         return "slot_out_of_range"
+    return None
+
+
+def _validate_nodes(value: Any) -> str | None:
+    if not isinstance(value, list):
+        return "wrong_type"
+    if not all(isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in value):
+        return "wrong_type"
+    if not value:
+        return "empty_node_list"
+    if len(set(value)) != len(value):
+        return "duplicate_node"
     return None
 
 

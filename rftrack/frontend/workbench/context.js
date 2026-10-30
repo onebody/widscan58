@@ -223,6 +223,12 @@ export function createContext({ api, now = () => new Date(), staleAfterS = 120, 
     persist();
   }
 
+  /** 建库之后场地名册要重取：`state.sites` 只在 `boot()` 里装过一次，不刷新树就看不见新场地。 */
+  async function refreshSites() {
+    state.sites = await api.sites();
+    return state.sites;
+  }
+
   const site = () => find(state.sites, "site_id", state.siteId);
   const relay = () => find(state.relays, "relay_id", state.relayId);
   const gateway = () => find(state.gateways, "gateway_id", state.gatewayId);
@@ -302,6 +308,8 @@ export function createContext({ api, now = () => new Date(), staleAfterS = 120, 
     selectRelay,
     selectGateway,
     selectNode,
+    refreshSites,
+    loadHierarchy,
     reconcile,
     memoryFor,
     persist,

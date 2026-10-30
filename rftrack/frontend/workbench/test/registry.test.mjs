@@ -8,18 +8,18 @@ import test from "node:test";
 
 import * as registry from "../registry.js";
 
-test("八个组件按来源分两路：实时推送与 REST 拉取，没有第三路", () => {
+test("十个组件按来源分两路：实时推送与 REST 拉取，没有第三路", () => {
   assert.deepEqual(registry.COMPONENTS.map((entry) => entry.id), [
-    "channel-matrix", "channel-detail", "rssi-trend", "signal-events", "node-status", "site-tree",
-    "channel-activity-heatmap", "target-inspector",
+    "channel-matrix", "channel-detail", "combined-spectrum", "rssi-trend", "signal-events", "node-status", "site-tree",
+    "channel-activity-heatmap", "target-inspector", "alert-feed",
   ]);
   assert.deepEqual(
     registry.COMPONENTS.filter((entry) => entry.source === "live").map((entry) => entry.id),
-    ["channel-matrix", "channel-detail", "signal-events"]
+    ["channel-matrix", "channel-detail", "combined-spectrum", "signal-events"]
   );
   assert.deepEqual(
     registry.COMPONENTS.filter((entry) => entry.source === "api").map((entry) => entry.id),
-    ["rssi-trend", "node-status", "site-tree", "channel-activity-heatmap", "target-inspector"]
+    ["rssi-trend", "node-status", "site-tree", "channel-activity-heatmap", "target-inspector", "alert-feed"]
   );
   // S5 那一路 `demo` 必须彻底不在：留着它，`registry.sourceWord("demo")` 就会给一格
   // 读不到真数的组件挂上"演示"这个词，而这一页再没有演示数据可演示。

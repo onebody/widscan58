@@ -417,6 +417,8 @@ th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: upp
 .key-flag--restart { color: var(--warning); border-color: var(--warning); }
 .slots { display: flex; gap: 3px; flex-wrap: wrap; }
 .slot { display: flex; flex-direction: column; align-items: center; gap: 1px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+.nodes { display: flex; gap: 8px; flex-wrap: wrap; }
+.node-check { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text); }
 .chain { font-size: 10px; font-family: var(--mono); }
 .unknown { color: var(--critical); }
 .field { display: flex; gap: 8px; align-items: baseline; }
@@ -463,6 +465,21 @@ th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: upp
 .heat-cell--active { background: color-mix(in srgb, var(--good) 55%, transparent); }
 .heat-cell--idle { background: color-mix(in srgb, var(--ink-2) 18%, transparent); }
 .heat-cell--empty { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.matrix-board { margin-top: 6px; padding-top: 4px; border-top: 1px dashed var(--border); }
+.matrix-board .meta { margin-top: 0; }
+.heat-group { margin-top: 6px; padding-top: 4px; border-top: 1px dashed var(--border); }
+.heat-group .meta { margin-top: 0; }
+
+/* --- 建库引导（site-tree 向导）------------------------------------------------- */
+.wizard { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.wizard-block { border: 1px dashed var(--border); padding: 6px 8px; margin: 0; }
+.wizard-block legend { font-size: 11px; color: var(--muted); padding: 0 4px; }
+.wizard-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.wizard-input { min-width: 140px; flex: 1 1 140px; }
+.wizard-input--slug { flex: 0 1 200px; }
+.probe-line { font-size: 11px; margin: 4px 0 0; }
+.probe-line--ok { color: var(--good); }
+.probe-line--bad { color: var(--warning); }
 
 /* --- 目标详情（S8）------------------------------------------------------------
  * 复核输入框与列表行沿用页面既有字级；"确认/否定"用的是普通 .btn——复核是页面上的
@@ -482,3 +499,25 @@ th { color: var(--muted); font-weight: 500; font-size: 10px; text-transform: upp
 .target-detail { border-top: 1px dashed var(--border); margin-top: 6px; padding-top: 6px; }
 .review-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .review-note { flex: 1 1 160px; min-width: 0; }
+
+/* 告警信息流：结构与 target-list 同形，只补告警自己的四态色。 */
+.alert-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.alert {
+  display: flex; gap: 8px; align-items: baseline; padding: 4px 6px;
+  border: 1px solid var(--grid); border-radius: 6px; cursor: pointer;
+}
+.alert:hover { background: var(--surface); }
+.alert.is-open { outline: 1px solid var(--border); }
+.alert--open { border-left: 3px solid var(--critical); }
+.alert--ack { border-left: 3px solid var(--warning); }
+.alert--silenced { border-left: 3px solid var(--muted); }
+.alert--resolved { border-left: 3px solid var(--good); opacity: 0.65; }
+.alert-kind { font-weight: 600; }
+.alert-summary { flex: 1 1 auto; }
+.alert-count { font-family: var(--mono); font-size: 11px; }
+.chip--open { color: var(--critical); border-color: var(--critical); }
+.chip--ack { color: var(--warning); border-color: var(--warning); }
+.chip--silenced { color: var(--muted); }
+.chip--resolved { color: var(--good); border-color: var(--good); }
+.alert-detail { border-top: 1px dashed var(--border); margin-top: 6px; padding-top: 6px; }
+.alert-panel { display: flex; flex-direction: column; gap: 4px; }

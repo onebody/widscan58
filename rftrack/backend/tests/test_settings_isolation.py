@@ -349,6 +349,36 @@ def test_the_slot_domain_is_zero_based_wherever_it_is_read(client, site):
     assert value(widgets(client, layout["layout_id"])["A"], "slots") == [count - 1]
 
 
+def test_the_nodes_key_takes_an_id_list_and_says_why_it_refuses(client, site):
+    """`nodes` 键（A 步组合选择层）只做形状校验：整数 id 列表、非空、无重复。
+
+    与 `slots` 的差别要有意记住：`nodes` **不校验 id 是否存在**——校验发生在取数那头
+    （`/api/samples/summary` 对每个 id 走 `node_not_in_site`）。配置层不知道节点表，
+    硬塞一起查会让两层互相持有对方的职责；组件侧对"配置里的节点没了"另有直说的一句。
+    """
+    schema = {row["key"]: row for row in client.get("/api/settings/schema").json()["keys"]}
+    assert schema["nodes"]["kind"] == "nodes"
+
+    layout = make_layout(client, site["site_id"])
+    put_widget(client, layout["layout_id"], "A", {"nodes": [1, 2]})
+    tile = widgets(client, layout["layout_id"])["A"]
+    assert value(tile, "nodes") == [1, 2] and source(tile, "nodes") == "instance"
+
+    for bad, reason in (
+        (["1", 2], "wrong_type"),
+        ([True], "wrong_type"),
+        ([0], "wrong_type"),
+        ([], "empty_node_list"),
+        ([3, 3], "duplicate_node"),
+    ):
+        refused = client.put(
+            f"/api/layouts/{layout['layout_id']}/widgets/A",
+            json={"plugin_id": WIDGETABLE_PLUGIN, "config": {"nodes": bad}},
+        )
+        assert refused.status_code == 422, (bad, refused.json())
+        assert refused.json()["detail"]["errors"] == [{"key": "nodes", "reason": reason}]
+
+
 def test_the_aggregator_instance_refuses_every_write(db_path):
     """S4 的"权限"= 层约束（2026-10-29 裁定，token 归 S11）：汇聚实例一切写 405。"""
     writer = TestClient(create_app(Settings(db_path=db_path, dialer_enabled=False)))

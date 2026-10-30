@@ -49,10 +49,18 @@ export function frame(size, domain, pad = PAD) {
 /**
  * 把一次采样序列折成绘图模型。`axis` 用 tick（整数节拍）而不是时间戳：
  * 演示与真实帧都是"每拍一个点"，跟着节拍走才不会因为某拍迟到而把线拉长。
+ *
+ * `series`（`[{label, samples}]`）是分线对比的入口：给了就一条线一个节点，`samples`
+ * 成了单系列简写。域取所有系列并集；`points` 仍是全部点摊平（旧断言不破），
+ * `built.series` 才是 draw 实际描的分组。
  */
-export function model({ samples, threshold = null, size = { w: 480, h: 180 }, ticks = 4, dBLabels = 4 }) {
-  const ticksX = samples.map((sample) => sample.tick);
-  const values = samples.map((sample) => sample.rssi_db);
+export function model({ samples, series = null, xLabels = null, threshold = null, size = { w: 480, h: 180 }, ticks = 4, dBLabels = 4 }) {
+  const groups = series && series.length
+    ? series.map((group) => ({ label: group.label ?? null, samples: group.samples || [] }))
+    : [{ label: null, samples: samples || [] }];
+  const all = groups.flatMap((group) => group.samples);
+  const ticksX = all.map((sample) => sample.tick);
+  const values = all.map((sample) => sample.rssi_db);
   const x0 = ticksX.length ? Math.min(...ticksX) : 0;
   const x1 = ticksX.length ? Math.max(...ticksX) : 1;
   const lo = values.length ? Math.min(...values, threshold ?? Infinity) : -128;
@@ -64,19 +72,23 @@ export function model({ samples, threshold = null, size = { w: 480, h: 180 }, ti
   const axis = frame(size, { x: [x0, x1 === x0 ? x0 + 1 : x1], y: [y0, y1] });
   const gridY = [];
   for (let value = y0; value <= y1 + 1e-9; value += step) gridY.push(value);
+  const pointOf = (sample) => ({
+    x: axis.sx(sample.tick),
+    y: axis.sy(sample.rssi_db),
+    at: sample.at,
+    tick: sample.tick,
+    rssi_db: sample.rssi_db,
+    source: sample.source,
+  });
   return {
     axis,
     size,
     gridY,
     domain: { x: [x0, x1], y: [y0, y1] },
-    points: samples.map((sample) => ({
-      x: axis.sx(sample.tick),
-      y: axis.sy(sample.rssi_db),
-      at: sample.at,
-      tick: sample.tick,
-      rssi_db: sample.rssi_db,
-      source: sample.source,
-    })),
+    points: all.map(pointOf),
+    series: groups.map((group) => ({ label: group.label, points: group.samples.map(pointOf) })),
+    // x 轴文字刻度（组合频谱的档位号）：给了才画，rssi-trend 那类时间轴继续留空。
+    xLabels: xLabels && xLabels.length ? xLabels : null,
     threshold: threshold === null ? null : { value: threshold, y: axis.sy(threshold) },
   };
 }
@@ -102,7 +114,7 @@ export function resizeCanvas(canvas, dpr = globalThis.devicePixelRatio || 1) {
  * 那样这个文件就得活在 DOM 里，也就没法在 Node 里被断言）。
  */
 export function draw(ctx, built, colors) {
-  const { axis, gridY, points, threshold } = built;
+  const { axis, gridY, xLabels, threshold } = built;
   ctx.strokeStyle = colors.grid;
   ctx.lineWidth = 1;
   ctx.font = colors.font;
@@ -127,22 +139,40 @@ export function draw(ctx, built, colors) {
     ctx.stroke();
     ctx.setLineDash([]);
   }
-  ctx.strokeStyle = colors.series;
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  points.forEach((point, index) => {
-    if (index === 0) ctx.moveTo(point.x, point.y);
-    else ctx.lineTo(point.x, point.y);
-  });
-  ctx.stroke();
-  const last = points[points.length - 1];
-  if (last) {
-    ctx.fillStyle = colors.series;
+  // 多系列时第 N 条线取 --sN（循环取色）；旧调用只给了一个 series 色，所有线共用它。
+  const palette = Array.isArray(colors.seriesList) && colors.seriesList.length
+    ? colors.seriesList
+    : [colors.series];
+  let drawn = 0;
+  for (const group of built.series) {
+    const color = palette[drawn % palette.length];
+    drawn += 1;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(last.x, last.y, 2.6, 0, Math.PI * 2);
-    ctx.fill();
+    group.points.forEach((point, index) => {
+      if (index === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.stroke();
+    const last = group.points[group.points.length - 1];
+    if (last) {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(last.x, last.y, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
-  return { points: points.length, gridLines: gridY.length };
+  if (xLabels) {
+    // x 轴文字走内边距（PAD.bottom 22px 里留了刻度的位置），不挤数据区。
+    ctx.fillStyle = colors.muted;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (const label of xLabels) {
+      ctx.fillText(label.text, axis.sx(label.tick), axis.bottom + 6);
+    }
+  }
+  return { points: built.points.length, gridLines: gridY.length, series: built.series.length };
 }
 
 /** 从样式表取色；`--s1` 等变量与原 `web/` 同名同义（同一套分类色板）。 */
@@ -155,6 +185,7 @@ export function colorsFrom(getVariable, { fallback = {}, font = "11px ui-sans-se
     grid: read("--grid", fallback.grid || "#333"),
     muted: read("--muted", fallback.muted || "#888"),
     series: read("--s1", fallback.series || "#3987e5"),
+    seriesList: ["--s1", "--s2", "--s3", "--s4"].map((name) => read(name, "")).filter(Boolean),
     threshold: read("--warning", fallback.threshold || "#c98500"),
     font,
   };

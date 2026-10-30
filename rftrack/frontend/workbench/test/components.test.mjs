@@ -279,6 +279,39 @@ const targetDetailAnswer = (id, overrides = {}) => ({
   ...overrides,
 });
 
+/** 一行告警：键与 `routers/alerts.py::alert_out`（不含 with_limitations 部分）一一对。 */
+const alertRow = (id, overrides = {}) => ({
+  alert_id: id,
+  rule_id: 2,
+  site_id: 1,
+  gateway_id: 20,
+  node_id: 30,
+  slot: 1,
+  kind: "threshold_crossing",
+  metric: "rssi_db",
+  value: -52.4,
+  threshold: -60,
+  ts: "2026-10-29T03:59:00+00:00",
+  last_ts: "2026-10-29T04:00:00+00:00",
+  count: 3,
+  status: "open",
+  source: "real",
+  silenced_until: null,
+  reviewed_at: null,
+  ...overrides,
+});
+
+/** 一条 `GET /api/alerts/{id}` 的详情：证据 + 局限（`with_limitations=True`）。 */
+const alertDetailAnswer = (id, overrides = {}) => ({
+  ...alertRow(id),
+  evidence: { value: { rssi_db: -52.4, threshold_db: -60, samples: 12 }, error: null },
+  review: { value: null, error: null },
+  limitations: [
+    "这条告警由规则引擎从插件判定推出，不是观测事实本身：先看证据链再处置",
+  ],
+  ...overrides,
+});
+
 function fakeApi(options) {
   const calls = [];
   const settle = (reply) => (reply && reply.__error ? Promise.reject({ reason: reply.__error, message: "桩：读数失败" }) : Promise.resolve(reply));
@@ -327,6 +360,34 @@ function fakeApi(options) {
       const reply = typeof options.review === "function" ? options.review(payload) : options.review ?? targetDetailAnswer(targetId);
       return settle(reply);
     },
+    alertsFeed: (params) => {
+      calls.push({ name: "alertsFeed", args: [params] });
+      const rows = typeof options.alerts === "function" ? options.alerts(params) : options.alerts ?? [];
+      return settle({
+        site_id: params.site,
+        range: { from: "2026-10-29T03:00:00+00:00", to: "2026-10-29T04:00:00+00:00", span_s: 3600 },
+        filters: { status: null, node: null },
+        limit: 600,
+        truncated: false,
+        rows,
+      });
+    },
+    alertDetail: (alertId, site = null) => {
+      calls.push({ name: "alertDetail", args: [alertId, site] });
+      return settle(pick(options.alertDetail ?? alertDetailAnswer(alertId), { alertId, site }, calls.length));
+    },
+    ackAlert: (alertId, payload) => {
+      calls.push({ name: "ackAlert", args: [alertId, payload] });
+      return settle(pick(options.ack ?? alertDetailAnswer(alertId, { status: "ack" }), { alertId, payload }, calls.length));
+    },
+    silenceAlert: (alertId, payload) => {
+      calls.push({ name: "silenceAlert", args: [alertId, payload] });
+      return settle(pick(options.silence ?? alertDetailAnswer(alertId, { status: "silenced" }), { alertId, payload }, calls.length));
+    },
+    resolveAlert: (alertId, payload) => {
+      calls.push({ name: "resolveAlert", args: [alertId, payload] });
+      return settle(pick(options.resolve ?? alertDetailAnswer(alertId, { status: "resolved" }), { alertId, payload }, calls.length));
+    },
     audit: () => ({ calls: [], dropped: 0 }),
   };
 }
@@ -339,16 +400,24 @@ function fakeApi(options) {
  */
 function harness(options = {}) {
   const calls = [];
-  const actions = new Proxy({}, {
+  const actions = options.actions ?? new Proxy({}, {
     get(_target, name) {
       if (typeof name !== "string") return undefined;
-      return (...args) => { calls.push({ name, args }); };
+      return async (...args) => {
+        calls.push({ name, args });
+        // 建库三步回一个"够组件往下走"的 created 行：向导拿到 id 才会接着探。
+        if (name === "createSite") return { site_id: 101, name: args[0].name };
+        if (name === "createRelay") return { relay_id: 110, name: args[0].name };
+        if (name === "createGateway") return { gateway_id: 120, name: args[0].name };
+        return undefined;
+      };
     },
   });
   const boards = options.boards ?? [ONLINE_BOARD];
   const store = {
     state: { link: options.link ?? null, widgets: [], selection: null },
     effectiveOf: (widget, key) => (options.effective || {})[key] ?? null,
+    describe: (error) => ({ reason: error.reason || "unknown", message: error.message || error.reason || String(error) }),
   };
   const context = {
     state: {
@@ -368,7 +437,7 @@ function harness(options = {}) {
   for (const frame of options.frames ?? []) env.net.sockets[0].sent(frame);
   if (options.drop) env.net.sockets[0].dropped(options.drop, options.dropReason ?? "");
   const api = fakeApi(options);
-  const deps = { store, context, live: env.live, actions, signal: { tick: { value: 0 } }, registry, api };
+  const deps = { store, context, live: env.live, actions, signal: { tick: { value: 0 }, bump: () => {} }, registry, api };
   const rt = fakeRt();
   return {
     rt, deps, actions, calls, api, store, context,
@@ -943,6 +1012,89 @@ test('场地层级树：汇聚场地把滞后写在树上，空库说还没有�
   assert.match(textOf(emptyTree.node), /库里还没有场地/);
 });
 
+// --- 建库引导（向导）-----------------------------------------------------------
+// 向导只调 deps.actions.*：写口仍集中在 app.js，site-tree 自己不碰 api——这条纪律
+// 用 calls 对账钉住，和"切层级不写"是同一条判据。
+
+const treeInputs = (root) => walk(root).filter((row) => row.tag === "input");
+const treeButton = (root, label) => walk(root).find((row) => row.tag === "button" && textOf(row) === label);
+const typeInto = (input, value) => input.props.onInput({ target: { value } });
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('建库引导：空库把第一步摆到眼前，代号从名字自动长出来', async () => {
+  const view = render("site-tree", { contextState: { ...emptyContext } });
+  assert.match(textOf(view.node), /场地 → 位置 → 接入机/);
+  assert.equal(findByClass(view.node, "wizard-block").length, 1, "没场地时只出第一块：第二三步没有挂靠点，摆出来也填不了");
+  const [name, slug] = treeInputs(view.node);
+  assert.match(String(name.props.placeholder), /场地名/);
+  typeInto(name, "Site A");
+  view.node = view.tree();
+  assert.equal(treeInputs(view.node)[1].props.value, "site-a", "代号跟着名字长，直到用户亲手改过它");
+  clickNode(view.node, (row) => row.tag === "button" && textOf(row) === "建场地");
+  await settle();
+  assert.deepEqual(view.calls[0], { name: "createSite", args: [{ name: "Site A", slug: "site-a" }] });
+});
+
+test('建库引导：纯中文名长不出代号就直说，不偷偷编一个也不发请求', async () => {
+  const view = render("site-tree", { contextState: { ...emptyContext } });
+  const [name] = treeInputs(view.node);
+  typeInto(name, "南山赛场");
+  clickNode(view.node, (row) => row.tag === "button" && textOf(row) === "建场地");
+  await settle();
+  assert.deepEqual(view.calls, [], "没代号就不许发请求");
+  view.node = view.tree();
+  const line = findByClass(view.node, "probe-line--bad")[0];
+  assert.match(textOf(line), /代号要自己填/);
+});
+
+test('建库引导：三块按层级渐进出现，建接入机填了地址就当场探测', async () => {
+  const site = { site_id: 1, name: "A 号赛段", status: "active", origin: "local" };
+  const relay = { relay_id: 10, name: "起点" };
+  const gateway = { gateway_id: 20, relay_id: 10, name: "接入机甲", dial_state: "online" };
+  const view = render("site-tree", {
+    contextState: {
+      ...emptyContext, sites: [site], relays: [relay], gateways: [gateway],
+      scopeGateways: [gateway], siteId: 1, relayId: 10, gatewayId: 20,
+    },
+  });
+  assert.equal(findByClass(view.node, "wizard-block").length, 3, "选到接入机这一级，三块都在");
+  const [, , relayName, gwName, gwUrl] = treeInputs(view.node);
+  typeInto(gwName, "桥 B");
+  typeInto(gwUrl, "http://192.168.99.50:8080");
+  clickNode(view.node, (row) => row.tag === "button" && textOf(row) === "建接入机");
+  await settle();
+  assert.deepEqual(view.calls.map((call) => call.name), ["createGateway", "probeGateway"]);
+  assert.deepEqual(view.calls[0].args[0], { relay_id: 10, name: "桥 B", base_url: "http://192.168.99.50:8080" });
+  assert.deepEqual(view.calls[1].args, [120], "探测的是新建那台的 id，不是当前选中的");
+  typeInto(relayName, "主看台");
+  clickNode(view.node, (row) => row.tag === "button" && textOf(row) === "建位置");
+  await settle();
+  assert.deepEqual(view.calls[2].args[0], { site_id: 1, name: "主看台" });
+});
+
+test('建库引导：后端拒绝的原因就地显示，不借状态栏也不吞掉', async () => {
+  const view = render("site-tree", {
+    contextState: { ...emptyContext },
+    actions: {
+      createSite: async () => {
+        const error = new Error("duplicate_slug");
+        error.reason = "duplicate_slug";
+        error.detail = { slug: "site-a" };
+        throw error;
+      },
+    },
+  });
+  const [name] = treeInputs(view.node);
+  typeInto(name, "Site A");
+  clickNode(view.node, (row) => row.tag === "button" && textOf(row) === "建场地");
+  await settle();
+  view.node = view.tree();
+  const line = findByClass(view.node, "probe-line--bad")[0];
+  assert.equal(line.props["data-reason"], "duplicate_slug");
+  assert.match(textOf(line), /duplicate_slug/);
+  assert.equal(findByClass(view.node, "wizard-block").length, 1, "失败之后表单还在原地，输入不丢");
+});
+
 // --- 频道活动热图 -------------------------------------------------------------
 // 与 rssi-trend 同一条取数口，但**不带 slot**：一次拿全部档位才画得成频道 × 时间。
 
@@ -1172,4 +1324,206 @@ test('趋势组件：有画布就真画一次，释放后补跑的钩子什么�
   view.rt.hooks.updated.forEach((fn) => fn());
   view.rt.hooks.mounted.forEach((fn) => fn());
   assert.deepEqual(surface.ops, [], "格子已经没了，晚一步跑的绘制不许再往画布上落笔");
+});
+
+// --- 告警信息流 ---------------------------------------------------------------
+// 与 target-inspector 同一条注意：局限里合法地写着否定句，这里不做整树否定词扫描。
+
+test('告警列表：读的是 /api/alerts，带上场地；空列表说这是"等人处置"的行不是没规则在跑', async () => {
+  const view = await renderLoaded("alert-feed", { alerts: [] });
+  const call = view.api.calls.find((row) => row.name === "alertsFeed");
+  assert.ok(call, "没有发列表请求");
+  assert.equal(call.args[0].site, 1);
+  assert.match(textOf(view.node), /没有告警/);
+  assert.match(textOf(view.node), /等人处置/);
+});
+
+test('告警列表：短语词按词表说人话，认不出的 kind/status 原样报出来', async () => {
+  const view = await renderLoaded("alert-feed", {
+    alerts: [alertRow(1), alertRow(2, { kind: "slot_rise" }), alertRow(3, { kind: "weird_kind", status: "weird_status" })],
+  });
+  const text = textOf(view.node);
+  assert.match(text, /越限/);
+  assert.match(text, /档位抬升/);
+  assert.match(text, /未知类型 weird_kind/);
+  assert.match(text, /weird_status/, "认不出的处置状态不并进别的词");
+  assert.match(text, /待处置/);
+  assert.match(text, /×3/, "合并命中次数要能一眼看见");
+});
+
+test('告警详情：点开才取详情；发生了什么、判定依据、局限三段各就各位', async () => {
+  const view = await renderLoaded("alert-feed", { alerts: [alertRow(5)] });
+  clickNode(view.node, (node) => hasClass(node, "alert"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const panel = view.tree();
+  const call = view.api.calls.find((row) => row.name === "alertDetail");
+  assert.ok(call, "点开没有发详情请求");
+  assert.deepEqual(call.args, [5, 1]);
+  const text = textOf(panel);
+  assert.match(text, /指标 rssi_db\s+·\s+读数 -52\.4\s+·\s+门限 -60\.0\s+·\s+合并命中 3 次/, "发生了什么这行由字段拼出来");
+  assert.match(text, /"threshold_db": -60/, "判定依据（evidence）原样贴出来，页面不挑拣字段");
+  assert.match(text, /先看证据链再处置/, "后端那句局限必须原样出现");
+});
+
+test('告警处置：按钮按状态画（open 三颗 / resolved 零颗），点确认就 POST 且不传时长', async () => {
+  const view = await renderLoaded("alert-feed", { alerts: [alertRow(5)] });
+  clickNode(view.node, (node) => hasClass(node, "alert"));
+  await new Promise((resolve) => setImmediate(resolve));
+  let panel = view.tree();
+  assert.equal(findByClass(panel, "btn").length, 3, "open 态三颗：确认、静默、解决");
+
+  clickNode(panel, (node) => node.tag === "button" && textOf(node).includes("确认"));
+  await new Promise((resolve) => setImmediate(resolve));
+  panel = view.tree();
+  const ack = view.api.calls.find((row) => row.name === "ackAlert");
+  assert.ok(ack, "点确认没有发请求");
+  assert.deepEqual(ack.args, [5, {}], "ack 不需要参数，空体就是空体");
+
+  const resolved = await renderLoaded("alert-feed", { alerts: [alertRow(6, { status: "resolved" })], alertDetail: alertDetailAnswer(6, { status: "resolved" }) });
+  clickNode(resolved.node, (node) => hasClass(node, "alert"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(findByClass(resolved.tree(), "btn").length, 0, "resolved 是终点，不该再画处置按钮");
+});
+
+test('告警处置：aggregator 上不画按钮，只说处置要去场地实例', async () => {
+  const view = await renderLoaded("alert-feed", {
+    contextState: { instanceRole: "aggregator" },
+    alerts: [alertRow(5)],
+  });
+  clickNode(view.node, (node) => hasClass(node, "alert"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const panel = view.tree();
+  assert.equal(findByClass(panel, "btn").length, 0, "只读实例上连按钮都不该出现，点了才知道就晚了");
+  assert.match(textOf(panel), /只读/);
+});
+
+test('告警处置：静默时长缺配置时把服务端的 hint 端出来，不在前端编一个默认数', async () => {
+  const view = await renderLoaded("alert-feed", {
+    alerts: [alertRow(5)],
+    silence: { __error: "silence_duration_required" },
+  });
+  clickNode(view.node, (node) => hasClass(node, "alert"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const panel = view.tree();
+  clickNode(panel, (node) => node.tag === "button" && textOf(node).includes("静默"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(textOf(view.tree()), /静默没有执行/, "失败要说话，不能静默成功");
+  assert.equal(view.api.calls.some((row) => row.name === "silenceAlert"), true);
+});
+
+// --- 组合选择层：nodes 配置勾了节点（A 步）-------------------------------------
+
+const BOARD_2 = { ...ONLINE_BOARD, node_id: 31, gateway_id: 21, display_name: "板 R2" };
+
+test('矩阵多节点：nodes 配置勾了就一段一节点，勾选顺序决定段落顺序', () => {
+  const { node } = render("channel-matrix", {
+    boards: [ONLINE_BOARD, BOARD_2],
+    frames: [samplesFrame(), samplesFrame({ node_id: 31, gateway_id: 21, display_name: "板 R2" })],
+    effective: { refresh_ms: 200, nodes: [31, 30] },
+  });
+  const sections = findByClass(node, "matrix-board");
+  assert.equal(sections.length, 2);
+  assert.match(textOf(sections[0]), /板 R2/, "勾的是 [31, 30]，第一段就该是板 R2");
+  assert.match(textOf(sections[1]), /板 R1/);
+  assert.match(textOf(node), /2 个节点（按配置勾选）/);
+  assert.match(textOf(node), /离散频道电平，不是频谱/);
+  assertNoInference(node);
+});
+
+test('矩阵多节点：配置里的节点已经不在场地了要直说，不悄悄吞掉', () => {
+  const { node } = render("channel-matrix", {
+    boards: [ONLINE_BOARD],
+    frames: [samplesFrame()],
+    effective: { refresh_ms: 200, nodes: [30, 99] },
+  });
+  assert.match(textOf(node), /#99 已经不在场地里了/);
+  assert.equal(findByClass(node, "matrix-board").length, 1, "还在的那块照画");
+});
+
+test('RSSI 趋势多节点：一次并集请求（nodes 参数），按 node_id 分线', async () => {
+  const { node, api } = await renderLoaded("rssi-trend", {
+    boards: [ONLINE_BOARD, BOARD_2],
+    link: { kind: "channel", id: 1 },
+    effective: { refresh_ms: 200, time_range_s: 30, nodes: [30, 31] },
+    summary: summaryAnswer([summaryRow(), summaryRow({ node_id: 31, gateway_id: 21, rssi_mean: -70 })]),
+  });
+  const params = api.calls[0].args[0];
+  assert.equal(api.calls.filter((row) => row.name === "samplesSummary").length, 1, "并集一次拿，不是每节点各打一口");
+  assert.equal(params.nodes, "30,31");
+  assert.equal("node" in params, false, "多节点时不该再带单 node 参数");
+  assert.equal(params.slot, 1, "分线共用联动档——同一档跨节点比高低");
+  assert.match(textOf(node), /2 个节点分线：板 R1、板 R2/);
+  assert.match(textOf(node), /每个节点一条线/);
+  assertNoInference(node);
+});
+
+test('热图多节点：一次并集请求 + 一段一节点', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    boards: [ONLINE_BOARD, BOARD_2],
+    effective: { refresh_ms: 200, nodes: [30, 31] },
+    summary: summaryAnswer([
+      summaryRow({ slot: 0, rssi_mean: -40 }),
+      summaryRow({ node_id: 31, gateway_id: 21, slot: 0, rssi_mean: -55 }),
+    ]),
+  });
+  const call = view.api.calls.find((row) => row.name === "samplesSummary");
+  assert.equal(call.args[0].nodes, "30,31");
+  const groups = findByClass(view.node, "heat-group");
+  assert.equal(groups.length, 2);
+  assert.match(textOf(groups[0]), /板 R1/);
+  assert.match(textOf(groups[1]), /板 R2/);
+  assertNoInference(view.node);
+});
+
+// --- 综合电平分线（B 步）：一条线一个节点，横轴是档位 ---------------------------
+
+test('综合分线：多节点各成一条线，常驻"不是连续频谱"那句', () => {
+  const { node } = render("combined-spectrum", {
+    boards: [ONLINE_BOARD, BOARD_2],
+    frames: [samplesFrame(), samplesFrame({ node_id: 31, gateway_id: 21, display_name: "板 R2", source: "mock" })],
+    effective: { refresh_ms: 200, nodes: [30, 31] },
+  });
+  assert.match(textOf(node), /2 个节点分线：板 R1、板 R2/);
+  assert.match(textOf(node), /离散频道电平，不是连续频谱/);
+  assert.equal(findByClass(node, "badge--real").length, 1);
+  assert.equal(findByClass(node, "badge--mock").length, 1, "一个节点真一个节点回放时，两种角标同时在场");
+  const canvas = walk(node).find((row) => row.tag === "canvas");
+  assert.match(canvas.props["aria-label"], /板 R1、板 R2/);
+  assertNoInference(node);
+});
+
+test('综合分线：quiet 的节点线缺席但要点名，不许"线不见了"被读成"电平为 0"', () => {
+  const { node } = render("combined-spectrum", {
+    boards: [ONLINE_BOARD, BOARD_2],
+    frames: [samplesFrame()],
+    effective: { refresh_ms: 200, nodes: [30, 31] },
+  });
+  assert.match(textOf(node), /没画出来的线：板 R2（还没有帧）/);
+});
+
+test('综合分线：没勾节点回落当前单板；勾的节点没了直说', () => {
+  const fallback = render("combined-spectrum", {
+    boards: [ONLINE_BOARD],
+    frames: [samplesFrame()],
+    effective: { refresh_ms: 200 },
+  });
+  assert.match(textOf(fallback.node), /板 R1/);
+  assert.equal(textOf(fallback.node).includes("个节点分线"), false, "没勾就不冒充分线");
+
+  const gone = render("combined-spectrum", {
+    boards: [ONLINE_BOARD],
+    frames: [samplesFrame()],
+    effective: { refresh_ms: 200, nodes: [99] },
+  });
+  assert.match(textOf(gone.node), /#99 已经不在场地里了/);
+});
+
+test('综合分线：slots 配置是横轴筛选，档间不插值', () => {
+  const { node } = render("combined-spectrum", {
+    boards: [ONLINE_BOARD],
+    frames: [samplesFrame({ channels: [point(0), point(1), point(3)] })],
+    effective: { refresh_ms: 200, slots: [0, 1] },
+  });
+  assert.match(textOf(node), /横轴已按配置筛到 2 档/);
+  assert.equal(textOf(node).includes("第 4 档"), false, "没进筛选的档不许出现");
 });

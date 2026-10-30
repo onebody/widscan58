@@ -58,21 +58,38 @@ def read_summary(
     session: Session = Depends(get_session),
     site: int = Depends(site_or_current),
     node: int | None = Query(default=None),
+    nodes: str | None = Query(default=None),
     slot: int | None = Query(default=None),
     start: datetime | None = Query(default=None, alias="from"),
     end: datetime | None = Query(default=None, alias="to"),
     bucket: int | None = Query(default=None),
     limit: int = Query(default=history.DEFAULT_ROWS),
 ) -> dict:
-    """这个场地、这一档粒度、这一段窗口里的摘要行，按时间升序回。"""
+    """这个场地、这一档粒度、这一段窗口里的摘要行，按时间升序回。
+
+    `nodes=1,2,3`（逗号分隔）是组合频谱那一路的多节点过滤：每个 id 都走与 `node` 同一条
+    `node_not_in_site` 校验，串场的 id 一个都不许混进结果；与单值 `node` 同时给时取并集。
+    """
     settings: Settings = request.app.state.settings
     get_or_404(session, Site, site, "site")
     frm, to, span = history.window(start, end)
     capped = history.row_limit(limit)
     stored = tuple(history.bucket_widths(session, site))
     width = history.choose_bucket(bucket, write_bucket(settings), stored)
+    node_ids: list[int] = []
+    if nodes is not None:
+        for part in nodes.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if not part.isdigit():
+                raise unprocessable("wrong_type", param="nodes", detail=f"节点 id 必须是整数，收到 {part!r}")
+            node_ids.append(int(part))
     if node is not None:
-        history.require_node_in_site(session, site, node)
+        node_ids.append(node)
+    node_ids = list(dict.fromkeys(node_ids))
+    for node_id in node_ids:
+        history.require_node_in_site(session, site, node_id)
     if slot is not None:
         check_slot(settings, site, slot)
 
@@ -88,8 +105,8 @@ def read_summary(
         .order_by(SampleSummary.ts_bucket.desc(), SampleSummary.node_id, SampleSummary.slot)
         .limit(capped + 1)
     )
-    if node is not None:
-        query = query.where(SampleSummary.node_id == node)
+    if node_ids:
+        query = query.where(SampleSummary.node_id.in_(node_ids))
     if slot is not None:
         query = query.where(SampleSummary.slot == slot)
 
@@ -102,7 +119,7 @@ def read_summary(
         "bucket_widths": list(stored),
         "allowed_buckets": list(history.allowed_buckets(write_bucket(settings), stored)),
         "range": {"from": frm, "to": to, "span_s": span},
-        "filters": {"node": node, "slot": slot},
+        "filters": {"node": node, "nodes": node_ids, "slot": slot},
         "limit": capped,
         "truncated": truncated,
         # 一段历史里混进回放行是允许的事实，但它必须是页面一眼能看见的事实：徽标按这个集合出。

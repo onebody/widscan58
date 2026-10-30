@@ -586,6 +586,17 @@ export function createStore({ api, context, registry, timers = globalThis, colum
         return "后端没有答话";
       case "request_invalid":
         return `请求体不合法：${(error.fields || []).map((field) => `${field.field}(${field.type})`).join("、")}`;
+      // 建库三步（site-tree 向导）的拒绝口径：reason 直译没人看得懂，逐条说人话。
+      case "duplicate_slug":
+        return `场地代号 ${error.detail.slug} 已被占用：代号全库唯一，换一个`;
+      case "duplicate_relay_name":
+        return `这个场地里已经有叫「${error.detail.name}」的位置了`;
+      case "duplicate_gateway_name":
+        return `这个位置里已经有叫「${error.detail.name}」的接入机了`;
+      case "site_archived":
+        return "这个场地已归档，不能往里加位置或接入机";
+      case "relay_archived":
+        return "这个位置已归档，不能往里加接入机";
       default:
         return error.reason || "未知错误";
     }

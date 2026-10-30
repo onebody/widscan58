@@ -190,6 +190,40 @@ export function mount(el, rtOverride) {
       }
       signal.bump();
     },
+
+    // --- 建库引导（site-tree 向导调用；成败与原因由组件就地显示） -------------
+    // 这些动作**只许**在用户点向导按钮时被调到——"切场地不碰写端点"的审计判据
+    // 依然成立：组件依旧不直接持有 api 写口，写只从这里过。
+    async createSite(payload) {
+      const created = await api.createSite(payload);
+      await context.refreshSites();
+      await actions.selectSite(created.site_id);
+      return created;
+    },
+    async createRelay(payload) {
+      const created = await api.createRelay(payload);
+      await context.loadHierarchy(context.state.siteId);
+      context.selectRelay(created.relay_id);
+      remember();
+      signal.bump();
+      return created;
+    },
+    async createGateway(payload) {
+      const created = await api.createGateway(payload);
+      await context.loadHierarchy(context.state.siteId);
+      context.selectGateway(created.gateway_id);
+      remember();
+      signal.bump();
+      return created;
+    },
+    async probeGateway(gatewayId) {
+      const result = await api.probeGateway(Number(gatewayId));
+      // probe 会更新 dial_state/last_seen：层级重取一次，树上那枚拨号徽标说的才是现在。
+      await context.loadHierarchy(context.state.siteId);
+      context.reconcile();
+      signal.bump();
+      return result;
+    },
   };
 
   function report(message) {
@@ -671,18 +705,23 @@ export function mount(el, rtOverride) {
   function effectiveTable(widget) {
     const keys = Object.keys(widget.effective || {});
     if (!keys.length) return h("p", { class: "muted" }, widget.isNew ? "还没保存，服务端没算过这一格的生效值" : "服务端没给出生效值");
+    const kindOf = (key) => {
+      const spec = store.state.schema.find((entry) => entry.key === key);
+      return spec ? spec.kind : null;
+    };
     return h(
       "table",
       { class: "kv-table" },
       keys.map((key) => {
         const entry = widget.effective[key];
+        const kind = kindOf(key);
         return h("tr", [
           h("th", key),
           h("td", [
-            h("span", { class: "val" }, `${renderValue(entry.value)}${entry.unit ? ` ${entry.unit}` : ""}`),
+            h("span", { class: "val" }, `${renderValue(entry.value, kind)}${entry.unit ? ` ${entry.unit}` : ""}`),
             h("span", { class: `src src--${entry.source}` }, entry.source),
           ]),
-          h("td", { class: "chain muted" }, (entry.chain || []).map((link) => chainCell(link)).join(" | ")),
+          h("td", { class: "chain muted" }, (entry.chain || []).map((link) => chainCell(link, kind)).join(" | ")),
           entry.rejected && entry.rejected.length
             ? h("td", { class: "warn" }, `被拒：${entry.rejected.map((item) => `${item.layer}=${item.reason}`).join("、")}`)
             : h("td", ""),
@@ -692,10 +731,10 @@ export function mount(el, rtOverride) {
   }
 
   /** 来源链的一格：只说这层设了什么或被拒了；"未设置的层只带层名"是服务端定的形状。 */
-  function chainCell(link) {
+  function chainCell(link, kind) {
     if (link.declaration_error) return `${link.layer}:声明有问题`;
-    if (link.rejected) return `${link.layer}:设了 ${renderValue(link.set_value)}（被拒 ${link.rejected}）`;
-    if ("value" in link) return `${link.layer}: ${renderValue(link.value)}`;
+    if (link.rejected) return `${link.layer}:设了 ${renderValue(link.set_value, kind)}（被拒 ${link.rejected}）`;
+    if ("value" in link) return `${link.layer}: ${renderValue(link.value, kind)}`;
     return `${link.layer}: 未设置`;
   }
 
@@ -803,6 +842,31 @@ export function mount(el, rtOverride) {
         )
       );
     }
+    if (entry.kind === "nodes") {
+      // 多选节点而不是自由数：候选名单来自当前场地的节点表，写的是 node_id 整数列表；
+      // 不勾任何节点 = 未设置，组件回落到当前选中的单板。
+      const chosen = new Set(Array.isArray(current) ? current : []);
+      const candidates = context.state.nodes;
+      if (!candidates.length) return h("span", { class: "muted" }, "这个场地还没有节点");
+      return h(
+        "span",
+        { class: "nodes" },
+        candidates.map((node) =>
+          h("label", { class: "node-check", "data-node": node.node_id }, [
+            h("input", {
+              type: "checkbox",
+              checked: chosen.has(node.node_id),
+              onChange: (event) => {
+                if (event.target.checked) chosen.add(node.node_id); else chosen.delete(node.node_id);
+                const list = [...chosen];
+                write(list.length ? list : null);
+              },
+            }),
+            h("span", `${node.display_name}（#${node.node_id}）`),
+          ])
+        )
+      );
+    }
     if (entry.kind === "object") {
       return h("span", { class: "muted" }, "这一档的值由设置页维护，工作台不就地改");
     }
@@ -813,10 +877,14 @@ export function mount(el, rtOverride) {
     });
   }
 
-  /** 生效值回显：整数不补小数点（`refresh_ms=200` 不该显示成 `200.0`）。 */
-  function renderValue(value) {
+  /** 生效值回显：整数不补小数点（`refresh_ms=200` 不该显示成 `200.0`）；
+   *  数组按 kind 分语义：slots 是 0 基档位号（回显 +1），nodes 是 node_id 原样。 */
+  function renderValue(value, kind = null) {
     if (value === null || value === undefined) return "未设置";
-    if (Array.isArray(value)) return value.map((item) => item + 1).join(",");
+    if (Array.isArray(value)) {
+      if (kind === "nodes") return value.map((item) => `#${item}`).join("、");
+      return value.map((item) => item + 1).join(",");
+    }
     if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(1);
     if (typeof value === "boolean") return value ? "是" : "否";
     return String(value);

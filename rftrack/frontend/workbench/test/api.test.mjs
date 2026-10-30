@@ -112,6 +112,27 @@ test("写请求带 JSON 体，204 回 null 而不是解析空响应", async () =
   assert.equal(captured.init.body, JSON.stringify({ version: 2 }));
 });
 
+test("建库三步与探测：路径与方法要和后端 routers/{sites,relays,gateways}.py 对得上", async () => {
+  const seen = [];
+  const api = createApi({
+    base: "",
+    fetchImpl: fakeFetch(async (url, init) => {
+      seen.push([url, init.method, init.body]);
+      return response({ status: 201, body: { ok: 1 } });
+    }),
+  });
+  await api.createSite({ name: "A 号赛段", slug: "site-a" });
+  await api.createRelay({ site_id: 1, name: "起点" });
+  await api.createGateway({ relay_id: 10, name: "桥 A", base_url: "http://192.168.99.50:8080" });
+  await api.probeGateway(20);
+  assert.deepEqual(seen, [
+    ["/api/sites", "POST", JSON.stringify({ name: "A 号赛段", slug: "site-a" })],
+    ["/api/relays", "POST", JSON.stringify({ site_id: 1, name: "起点" })],
+    ["/api/gateways", "POST", JSON.stringify({ relay_id: 10, name: "桥 A", base_url: "http://192.168.99.50:8080" })],
+    ["/api/gateways/20/probe", "POST", JSON.stringify({})],
+  ]);
+});
+
 test("约定形状：{detail:{reason}} 原样成为 ApiError.reason", async () => {
   const api = createApi({
     base: "",

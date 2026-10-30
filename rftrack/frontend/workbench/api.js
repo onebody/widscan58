@@ -155,6 +155,13 @@ export function createApi(options = {}) {
     nodes: ({ site, gateway } = {}) => get("/api/nodes", { site, gateway }),
     endpoints: (gatewayId) => get("/api/endpoints", { gateway: gatewayId }),
 
+    /** 建库三步（S2 的写侧本来就有，这里补上调用口）：不成功就把 reason 交给页面说人话。 */
+    createSite: (payload) => send("POST", "/api/sites", payload),
+    createRelay: (payload) => send("POST", "/api/relays", payload),
+    createGateway: (payload) => send("POST", "/api/gateways", payload),
+    /** 接入机先探再录：probe 不成功时 201 照样能建，但探的结果必须显示出来。 */
+    probeGateway: (gatewayId) => send("POST", `/api/gateways/${gatewayId}/probe`, {}),
+
     /** 摘要桶（S6）：参数名与端点一致，`slot: 0` 不许被当成"没给"。 */
     samplesSummary: (params = {}) => get("/api/samples/summary", params),
     eventsFeed: (params = {}) => get("/api/events", params),
@@ -165,6 +172,14 @@ export function createApi(options = {}) {
     targetsFeed: (params = {}) => get("/api/targets", params),
     targetDetail: (targetId, site = null) => get(`/api/targets/${targetId}`, { site }),
     reviewTarget: (targetId, payload) => send("POST", `/api/targets/${targetId}/review`, payload),
+
+    /** 告警（S8 规则引擎的候选行）：读侧与处置侧同一条场地口径；空体 POST 的三个处置
+     * 端点都收 `{}`——ack/resolve 不需要参数，silence 不带 seconds 就落到场地默认时长。 */
+    alertsFeed: (params = {}) => get("/api/alerts", params),
+    alertDetail: (alertId, site = null) => get(`/api/alerts/${alertId}`, { site }),
+    ackAlert: (alertId) => send("POST", `/api/alerts/${alertId}/ack`, {}),
+    silenceAlert: (alertId, payload = {}) => send("POST", `/api/alerts/${alertId}/silence`, payload),
+    resolveAlert: (alertId, payload = {}) => send("POST", `/api/alerts/${alertId}/resolve`, payload),
 
     layouts: (siteId) => get("/api/layouts", { site: siteId }),
     createLayout: (payload) => send("POST", "/api/layouts", payload),

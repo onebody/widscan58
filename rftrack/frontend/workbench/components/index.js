@@ -11,9 +11,11 @@
  */
 
 import * as registry from "../registry.js";
+import { create as alertFeed } from "./alert-feed.js";
 import { create as channelDetail } from "./channel-detail.js";
 import { create as channelMatrix } from "./channel-matrix.js";
 import { create as channelActivityHeatmap } from "./channel-activity-heatmap.js";
+import { create as combinedSpectrum } from "./combined-spectrum.js";
 import { create as nodeStatus } from "./node-status.js";
 import { create as rssiTrend } from "./rssi-trend.js";
 import { create as signalEvents } from "./signal-events.js";
@@ -24,8 +26,10 @@ import { create as unknownPlugin } from "./unknown-plugin.js";
 export const IMPLEMENTED = {
   "channel-matrix": channelMatrix,
   "channel-detail": channelDetail,
+  "combined-spectrum": combinedSpectrum,
   "rssi-trend": rssiTrend,
   "signal-events": signalEvents,
+  "alert-feed": alertFeed,
   "channel-activity-heatmap": channelActivityHeatmap,
   "target-inspector": targetInspector,
   "node-status": nodeStatus,

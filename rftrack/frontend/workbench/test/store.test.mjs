@@ -422,6 +422,22 @@ test("版本超前被服务端拒时回的是人话：页面上不许只剩一�
   assert.equal(/^[a-z_]+$/.test(described.message), false);
 });
 
+test("建库三步的拒绝也是人话：代号/重名/归档各有各的说法", async () => {
+  const { store } = await booted();
+  const cases = [
+    [{ reason: "duplicate_slug", detail: { slug: "site-a" } }, /site-a 已被占用/],
+    [{ reason: "duplicate_relay_name", detail: { name: "起点" } }, /「起点」/],
+    [{ reason: "duplicate_gateway_name", detail: { name: "桥 A" } }, /「桥 A」/],
+    [{ reason: "site_archived" }, /已归档/],
+    [{ reason: "relay_archived" }, /已归档/],
+  ];
+  for (const [error, pattern] of cases) {
+    const described = store.describe(error);
+    assert.match(described.message, pattern, `${error.reason} 的措辞不对：${described.message}`);
+    assert.equal(/^[a-z_]+$/.test(described.message), false);
+  }
+});
+
 test("汇聚实例只读是另一件事：理由与修法都不同，页面要分开显示", async () => {
   const { store } = await booted({ role: "aggregator" });
   assert.equal(store.readOnlyReason().reason, "aggregator_read_only");

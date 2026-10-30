@@ -69,6 +69,28 @@ export function currentBoard(deps) {
   return deps.context.state.scopeNodes.find((row) => row.node_id === id) || null;
 }
 
+/**
+ * 这块格子要读数的板清单：`nodes` 配置勾了就按勾选来（场地级，可跨接入机），
+ * 没勾回落到四级选择器选中的那块单板。配置里已经不存在的节点进 `missing`——
+ * 丢掉不说是替运营者改了配置，画不出来也得说出来。
+ */
+export function nodeScope(deps, widget) {
+  const ids = deps.store.effectiveOf(widget, "nodes");
+  if (!ids || !ids.length) {
+    const board = currentBoard(deps);
+    return { boards: board ? [board] : [], missing: [], multi: false };
+  }
+  const byId = new Map(deps.context.state.nodes.map((row) => [row.node_id, row]));
+  const boards = [];
+  const missing = [];
+  for (const id of ids) {
+    const row = byId.get(id);
+    if (row) boards.push(row);
+    else missing.push(id);
+  }
+  return { boards, missing, multi: true };
+}
+
 /** 电平帧能力：只有 `supported === true` 才算声明了。`null`（不认识）与缺失都算没声明。 */
 export function levelsDeclared(board) {
   const declared = board && board.capabilities ? board.capabilities.levels : null;

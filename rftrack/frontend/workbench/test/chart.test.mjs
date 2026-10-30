@@ -139,3 +139,73 @@ test("colorsFrom：只认 CSS 变量，取不到才用后备", () => {
   const fromFallback = colorsFrom(() => "", { fallback: { threshold: "#abcdef" } });
   assert.equal(fromFallback.threshold, "#abcdef");
 });
+
+const makeCtx = () => {
+  const calls = [];
+  return {
+    calls,
+    ctx: new Proxy({}, {
+      get(_target, key) {
+        if (key === "setTransform" || typeof key === "symbol") return () => {};
+        return (...args) => calls.push([String(key), args]);
+      },
+      set() { return true; },
+    }),
+  };
+};
+
+test("model/draw：series 分线——一条线一组点，域取全部系列的并集", () => {
+  const built = model({
+    series: [
+      { label: "板 R1", samples: samples([-90, -80]) },
+      { label: "板 R2", samples: samples([-70, -60]) },
+    ],
+    threshold: -65,
+    size: { w: 480, h: 180 },
+  });
+  assert.deepEqual(built.series.map((group) => group.label), ["板 R1", "板 R2"]);
+  assert.equal(built.points.length, 4, "points 仍是全部点摊平，旧断言不破");
+  assert.ok(built.domain.y[0] <= -90 && built.domain.y[1] >= -60, "值域跨两条线，不是只看第一条");
+  const { calls, ctx } = makeCtx();
+  const result = draw(ctx, built, {
+    grid: "#000", muted: "#888", series: "#3987e5",
+    seriesList: ["#3987e5", "#d95926"], threshold: "#c98500", font: "11px",
+  });
+  assert.equal(result.points, 4);
+  assert.equal(result.series, 2);
+  const strokes = calls.filter(([name]) => name === "stroke").length;
+  assert.ok(strokes >= 2, "每条系列各描一笔");
+  const arcCount = calls.filter(([name]) => name === "arc").length;
+  assert.equal(arcCount, 2, "每条线各自带末点标记");
+});
+
+test("draw：没有 seriesList 时全部线共用一个 series 色（旧调用不破）", () => {
+  const { calls, ctx } = makeCtx();
+  const built = model({
+    series: [
+      { label: "A", samples: samples([-90, -80]) },
+      { label: "B", samples: samples([-70, -60]) },
+    ],
+    size: { w: 480, h: 180 },
+  });
+  const result = draw(ctx, built, { grid: "#000", muted: "#888", series: "#3987e5", threshold: "#c98500", font: "11px" });
+  assert.equal(result.series, 2);
+  assert.equal(calls.filter(([name]) => name === "arc").length, 2);
+});
+
+test("model/draw：xLabels 给了就画档位号，不给不画（时间轴那路不受影响）", () => {
+  const withLabels = model({
+    samples: samples([-90, -80, -70]),
+    xLabels: [{ tick: 0, text: "1" }, { tick: 1, text: "2" }, { tick: 2, text: "3" }],
+    size: { w: 480, h: 180 },
+  });
+  const a = makeCtx();
+  draw(a.ctx, withLabels, { grid: "#000", muted: "#888", series: "#3987e5", threshold: "#c98500", font: "11px" });
+  const texts = a.calls.filter(([name]) => name === "fillText").map(([, args]) => args[0]);
+  assert.deepEqual(texts.slice(-3), ["1", "2", "3"], "x 刻度文字在网格线文字之后");
+  const without = model({ samples: samples([-90, -80]) });
+  const b = makeCtx();
+  const result = draw(b.ctx, without, { grid: "#000", muted: "#888", series: "#3987e5", threshold: "#c98500", font: "11px" });
+  assert.equal(result.points, 2);
+  assert.equal(b.calls.filter(([name]) => name === "fillText").length, without.gridY.length, "只有 y 轴刻度");
+});
