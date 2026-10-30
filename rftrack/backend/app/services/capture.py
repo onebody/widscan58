@@ -35,7 +35,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 from sqlalchemy import select
 
@@ -85,12 +85,17 @@ class PluginFeeder(Protocol):
     先问 `armed` 再决定要不要构造那一批：S7 的回滚判据是"全部停用即等效不存在"，而采集这边
     每帧都要走这条路——如果停用还留着建批与投喂的动作，那关掉的只是产出，不是这件事本身。
     `offer` 抛出来的一切由采集层记在自己的计数上，绝不让一帧的采集停在半路上。
+
+    `offer` 收的是**一窗**（同一 (网关, 节点) 在 `FEED_WINDOW_S` 内的帧列），不是一帧：
+    真机 236 帧/s 对运行时每拍 `DRAIN_CHUNK=32`，逐帧投递会让三支插件各自丢 87.5%
+    （2026-10-30 真机实测）。攒窗在采集侧，`feed()` 仍逐帧调用——插件与 `FrameBatch` 的
+    语义都不为此改。
     """
 
     @property
     def armed(self) -> bool: ...
 
-    def offer(self, batch: FrameBatch) -> str: ...
+    def offer(self, batches: Sequence[FrameBatch]) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -115,6 +120,20 @@ class _PendingFrame:
     points: tuple[dict[str, Any], ...]
     decoded: dict[str, Any]
     moment: datetime
+
+
+#: 插件投递的攒窗时长。真机一轮 60 s 实测：236 帧/s 逐帧投递，每支插件每拍只搬
+#: `DRAIN_CHUNK=32`，丢 87.5%；250 ms 一窗即每节点约 4 窗/s，每拍 32 窗的搬运定额绰绰有余。
+#: 判定延迟的代价 ≤ 一窗 + 一拍，对 `alert_hold_s` 起步就以秒计的规则无所谓。
+FEED_WINDOW_S = 0.25
+
+
+@dataclass
+class _FeedWindow:
+    """同一 (网关, 节点) 正在攒的投递窗。只在事件循环上读写，不需要锁。"""
+
+    since: datetime
+    batches: list[FrameBatch]
 
 
 @dataclass
@@ -307,9 +326,13 @@ class CapturePipeline:
         #: 投喂给插件的三条账。`plugin_refused` 是"这批插件那边没收"（撞队列条数硬闸），
         #: 队列满而挤掉旧批的那种丢由运行时自己数（`plugin_runtime.status()`）——两边的"丢"
         #: 主语不同：那边丢的是**已经交出去的**一批，这里一个字节都没离开采集层。
+        #: 批自 2026-10-30 起是**窗**（`FEED_WINDOW_S`），不是帧。
         self.plugin_batches = 0
         self.plugin_refused = 0
         self.plugin_errors = 0
+        #: 按 (网关, 节点) 攒的投递窗。窗有界：热流的窗靠下一帧到点即关（`_feed_plugins`），
+        #: 尾窗靠 `prepare()`（每轮）与 `stop()`（最后一拍）兜底——三条路都走 `_offer_window`。
+        self._feed_windows: dict[tuple[int, int], _FeedWindow] = {}
         #: 归属表没刷成功过几轮。不是故障申报，只是"新登记的板子可能还没被认领"的线索。
         self.node_table_failures = 0
         self.ticks = 0
@@ -733,15 +756,17 @@ class CapturePipeline:
         decoded: dict[str, Any],
         moment: datetime,
     ) -> None:
-        """把这一帧原样交给插件运行时——**只交已经归属成功的**那一帧。
+        """把这一帧攒进投递窗——**只攒已经归属成功的**那一帧。
 
         批里的身份全部来自 `NodeRef`（`_emit` 的入参），不是插件自己填的：`plugin_finding`
         上"这是 A 场地那块板的实时读数"这句话只能由采集层说。`ts` 用观测时刻而不是落库时刻，
         回放整晚录制文件时判定的时间轴才落在数据那一侧。
 
         位置在发布之前、`points_stored` 之后：`_emit` 后半段有个 `publisher is None` 的提前返回，
-        放在它后面就成了"没订阅页面就没有判定"。异常一律在这里吃掉——插件是采集的下游，
-        它坏了轮不到采集停（任务书 §10.4），而代价必须是一个数，不是一句日志。
+        放在它后面就成了"没订阅页面就没有判定"。攒窗的理由见 `PluginFeeder` 与 `FEED_WINDOW_S`；
+        窗到点即关（用本帧的观测时刻判，与攒窗用的同一条时间轴），尾窗由 `prepare()`/`stop()`
+        兜底。异常一律在这里吃掉——插件是采集的下游，它坏了轮不到采集停（任务书 §10.4），
+        而代价必须是一个数，不是一句日志。
         """
         feeder = self.plugins
         if feeder is None or not feeder.armed:
@@ -758,8 +783,20 @@ class CapturePipeline:
                 for point in points
             ),
         )
+        key = (node.gateway_id, node.node_id)
+        window = self._feed_windows.get(key)
+        if window is not None and (moment - window.since).total_seconds() >= FEED_WINDOW_S:
+            self._offer_window(feeder, key, window)
+            window = None
+        if window is None:
+            window = self._feed_windows[key] = _FeedWindow(since=moment, batches=[])
+        window.batches.append(batch)
+
+    def _offer_window(self, feeder: PluginFeeder, key: tuple[int, int], window: _FeedWindow) -> None:
+        """关窗投递。窗与账都只在事件循环上动，热路径（`_feed_plugins`）与兜底（`prepare`）共用。"""
+        del self._feed_windows[key]
         try:
-            outcome = feeder.offer(batch)
+            outcome = feeder.offer(tuple(window.batches))
         except Exception as exc:
             self.plugin_errors += 1
             self.log.warning("plugin feed failed: %s", exc)
@@ -768,6 +805,22 @@ class CapturePipeline:
         if outcome == "refused":
             self.plugin_refused += 1
 
+    def _flush_feed_windows(self) -> None:
+        """把所有还开着窗整窗投出去——`prepare()` 每轮开头与 `stop()` 的最后一拍走这里。
+
+        热流用不到它（窗在 250 ms 内就被下一帧关掉），它兜的是两种尾：稀疏流（回放、
+        低频板）的最后一窗，以及"这一拍之后再也没有下一帧"的收摊时刻。不兜底的现象很具体：
+        回放演完，最后不到一秒的帧永远停在窗里，页面上少了它们而谁也说不出去向。
+        """
+        if not self._feed_windows or self.plugins is None:
+            return
+        feeder = self.plugins
+        for key, window in list(self._feed_windows.items()):
+            if window.batches:
+                self._offer_window(feeder, key, window)
+            else:
+                del self._feed_windows[key]
+
     # --- 一轮：内存侧准备 → 线程侧读写 → 内存侧结算 ---------------------------
 
     def prepare(self) -> _Job:
@@ -775,7 +828,11 @@ class CapturePipeline:
 
         上一轮没写成的（`_retry_*`）先接进来：`drain()` 已经把累加器清空，不接就等于丢了。
         重发是安全的——库里那一批并没有落进去，而 `upsert_summaries` 按主键合并。
+
+        开头先关投递窗：`tick()`/`flush_cycle()` 两形态都经过这里，尾窗（稀疏流的最后一窗、
+        收摊时刻）由它兜底，与热流的"到点即关"共用 `_offer_window` 一个口。
         """
+        self._flush_feed_windows()
         rows = self._retry_rows + self.aggregator.drain()
         return _Job(rows=rows, events=self._transitions())
 

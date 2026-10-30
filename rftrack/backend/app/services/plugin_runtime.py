@@ -7,9 +7,10 @@
 
 四条纪律，每条都对着一个会坏在现场的场景：
 
-1. **投递侧不碰库**。`offer()` 由采集层在事件循环上每帧调一次，所以它只读内存里那份由
-   `refresh()` 整份换过的启用快照；注册表那一行改了没有，等下一轮 `run_once()` 再说。这是采集
-   层"循环上一个字节的 SQL 都不做"那条纪律的插件侧版本。
+1. **投递侧不碰库**。`offer()` 由采集层在事件循环上每**窗**调一次（一窗 = 同一 (网关, 节点)
+   在一个时间窗内的帧列，攒窗在采集层），所以它只读内存里那份由 `refresh()` 整份换过的启用快照；
+   注册表那一行改了没有，等下一轮 `run_once()` 再说。这是采集层"循环上一个字节的 SQL 都不做"
+   那条纪律的插件侧版本。
 2. **没有任何一支启用插件时，`offer()` 一个字节都不攒**。回滚判据"全部 `enabled=0` 即等效不
    存在"要靠这一条成立——关掉的插件继续攒队列，Pi（可用内存约 460 MB，方案 §5）上表现为"内存
    一直在涨，而插件页说它没在跑"，那与"插件有 bug"长成同一个样子。
@@ -46,6 +47,7 @@ from ..models import (
     utcnow,
 )
 from ..plugins import IMPLEMENTATIONS
+from ..plugins.base import FrameBatch
 from . import config_layer
 from .instance import effective_instance_role
 from .store import GatewayQueue
@@ -59,6 +61,8 @@ EXECUTABLE_SCOPES = ("global", "site", "gateway")
 
 #: 一轮里每条队列最多搬多少批。搬运必须有顶：一条打满的队列若不限量，`run_once()` 就可能长时间
 #: 占着线程池里那根线程，而同一个池正被采集层的落库用着。
+#: "批"自 2026-10-30 起是**一个窗口**（同一节点 ≤250 ms 的帧列，见 capture.py 的 `FEED_WINDOW_S`），
+#: 不再是一帧——真机 236 帧/s 对每拍 32 帧，投递侧丢 87.5%；改窗口后每拍 32 窗对每秒约 4 窗。
 DRAIN_CHUNK = 32
 
 # --- supervisor 的节奏 -------------------------------------------------------
@@ -170,6 +174,10 @@ class PluginRuntime:
         #: 同一条理由：健康检查在另一个线程里迭代它。
         self._queue_stats: tuple[dict[str, Any], ...] = ()
         self.batches_offered = 0
+        #: 帧数另记一本：批改成窗口后，"offered vs fed"要用**同一单位**才说得出"一帧都没丢"。
+        #: 批（窗口）的账回答运输层挤不挤，帧的账回答判定层有没有看见每一条读数——两个都看。
+        self.frames_offered = 0
+        self.frames_fed = 0
         self.dropped_batches = 0
         #: 按 (插件, 批) 记：某支插件的队列条数撞上 `max_gateways` 闸、这批没交给它。可以大于
         #: `batches_offered`（三支一起拒就是三次）。队列满是"丢了最旧那批"，这是"这台没排上队"，
@@ -453,30 +461,38 @@ class PluginRuntime:
         """
         return bool(self._runs)
 
-    def offer(self, batch: Any) -> str:
-        """一批已归属的点。非阻塞、不碰库、绝不抛异常。
+    def offer(self, batches: Any) -> str:
+        """一窗已归属的帧（或单个 `FrameBatch`，视作一帧的窗口——测试直接喂运行时用这个形态）。
+        非阻塞、不碰库、绝不抛异常。
 
         返回值说的是投递这件事本身：`disabled`（没有可投的对象）、`out_of_scope`（启用的插件都
         不认这块板属于它的作用域）、`refused`（这条网关撞上了队列条数硬闸）、`dropped_oldest`
         （至少一条队列满了，丢的是最旧那批）、`queued`。多支插件各自的队列可能给出不同答案，
         所以这个串只取"最该被看到的那一件"，而每条队列的精确数字在 `stats()` 里——一个字符串
         说不出六条队列的情况，硬要它说就会说谎。
+
+        一窗帧共享同一身份（同一 (网关, 节点) 才攒得进一个窗），所以作用域与队列条数硬闸
+        按首帧判一次；队列条目是整窗，`dropped_oldest` 丢的也是整窗。
         """
+        if isinstance(batches, FrameBatch):
+            batches = (batches,)
         if not self._runs:
             return "disabled"
         self.batches_offered += 1
+        self.frames_offered += len(batches)
         dropped = False
         accepted = refused = skipped = 0
+        first = batches[0]
         for run in self._runs.values():
-            if not run.claims(batch):
+            if not run.claims(first):
                 skipped += 1
                 continue
-            queue = run.queue_for(batch.gateway_id, self.settings.max_gateways)
+            queue = run.queue_for(first.gateway_id, self.settings.max_gateways)
             if queue is None:
                 refused += 1
                 continue
             accepted += 1
-            if queue.offer(batch) == "dropped_oldest":
+            if queue.offer(tuple(batches)) == "dropped_oldest":
                 dropped = True
         self._publish_queues()
         self.batches_refused += refused
@@ -576,22 +592,28 @@ class PluginRuntime:
         for queue in list(run.queues.values()):
             for _ in range(DRAIN_CHUNK):
                 try:
-                    batch = queue.get_nowait()
+                    window = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break  # 这条队搬空了
                 batches += 1
                 try:
-                    config = self._config_for(batch.site_id, run.keys)
+                    config = self._config_for(window[0].site_id, run.keys)
                 except Exception as exc:
                     return self._lose(run, moment, batches, exc, rows=len(rows))
-                try:
-                    findings = run.instance.feed(batch, config)
-                except Exception as exc:
-                    failed += 1
-                    self._note_error(run, exc)
-                    break  # 同一轮不再喂这条队列：坏状态喂第二帧只会崩在更远的地方
-                for finding in findings or ():
-                    rows.append(self._finding_row(run, batch, finding))
+                crashed = False
+                for batch in window:
+                    try:
+                        findings = run.instance.feed(batch, config)
+                    except Exception as exc:
+                        failed += 1
+                        self._note_error(run, exc)
+                        crashed = True
+                        break  # 这一窗不再喂：坏状态喂第二帧只会崩在更远的地方
+                    self.frames_fed += 1
+                    for finding in findings or ():
+                        rows.append(self._finding_row(run, batch, finding))
+                if crashed:
+                    break  # 同一轮不再喂这条队列——旧口径原样保留，只是单位从帧换成了窗
         try:
             self._write(run, rows, moment, batches=batches, findings=len(rows), errors=failed)
         except Exception as exc:
@@ -786,6 +808,8 @@ class PluginRuntime:
             "config_ttl_s": CONFIG_TTL_S,
             "refreshes": self.refreshes,
             "batches_offered": self.batches_offered,
+            "frames_offered": self.frames_offered,
+            "frames_fed": self.frames_fed,
             "dropped_batches": self.dropped_batches,
             "batches_refused": self.batches_refused,
             "batches_out_of_scope": self.batches_out_of_scope,

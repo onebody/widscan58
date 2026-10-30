@@ -1088,6 +1088,34 @@ def test_a_disable_drains_a_deeper_queue_than_one_round_carries(client):
     assert json.loads(disabled[0].detail_json) == {"discarded_batches": 0}
 
 
+def test_a_window_is_one_queue_entry_but_the_plugin_sees_every_frame(client):
+    """批改窗后单位不能混：队列的账按**窗**，插件看见的读数按**帧**，两本各说各的。
+
+    真机 87.5% 那个丢是"逐帧投递 vs 每拍 32"的账；改窗口之后，"一帧都没丢"必须能从 health
+    上读出来——`frames_offered`/`frames_fed` 用帧作单位，`queues[].depth` 用窗作单位，哪一个
+    拿别的单位去比都会说谎。单帧直接 `offer` 也必须是合法形态（一帧的窗口），否则运行时的
+    全部既有用例都得跟着换姿势，而那不是这条改动要动的东西。
+    """
+    where = add_site(client, "alpha", "A场", 5)
+    enable_plugin(client, "alert-engine")
+    runtime = runtime_for(client)
+    runtime.refresh()
+
+    assert runtime.offer(
+        [
+            one_batch(gateway_id=where["gateway"], node_id=where["node"], seq=1, ts=moment(0)),
+            one_batch(gateway_id=where["gateway"], node_id=where["node"], seq=2, ts=moment(100)),
+        ]
+    ) == "queued"
+    status = runtime.status()
+    assert status["frames_offered"] == 2
+    assert status["queues"][0]["depth"] == 1, "一窗只占一条队列条目"
+
+    runtime.run_once()
+    assert state_of(client, "alert-engine").processed == 1
+    assert runtime.status()["frames_fed"] == 2, "feed() 仍逐帧调用，一帧都不能少"
+
+
 def test_a_disable_that_loses_batches_is_reported_even_when_the_row_was_already_stopped(
     client, monkeypatch
 ):
@@ -1679,6 +1707,8 @@ def test_a_switched_off_runtime_shows_an_honest_plugins_section(client):
         "config_ttl_s": CONFIG_TTL_S,
         "refreshes": 0,
         "batches_offered": 0,
+        "frames_offered": 0,
+        "frames_fed": 0,
         "dropped_batches": 0,
         "batches_refused": 0,
         "batches_out_of_scope": 0,

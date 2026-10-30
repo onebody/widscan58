@@ -20,6 +20,7 @@ import asyncio
 import json
 import zlib
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -907,8 +908,8 @@ class FakeFeeder:
         self.armed_checks += 1
         return self._armed
 
-    def offer(self, batch) -> str:
-        self.seen.append(batch)
+    def offer(self, batches) -> str:
+        self.seen.append(tuple(batches))
         if self.boom:
             raise RuntimeError("runtime gone")
         return self.outcome
@@ -935,7 +936,8 @@ def test_an_attributed_frame_is_handed_to_the_plugins_whole(client, odd_ids):
     pipeline.drain_all()
     pipeline.tick()  # 归属表在这一拍才读进来：`_emit` 是这一拍里发生的
 
-    (batch,) = feeder.seen
+    (window,) = feeder.seen
+    (batch,) = window  # 单帧也走窗：尾窗由 `prepare()`（tick 兜底）关闭
     assert (batch.site_id, batch.gateway_id, batch.node_id) == (
         node["site_id"],
         node["gateway_id"],
@@ -948,6 +950,43 @@ def test_an_attributed_frame_is_handed_to_the_plugins_whole(client, odd_ids):
     assert batch.seq == publisher.messages[0][1]["seq"]
     assert batch.ts == pipeline.store.series(node["gateway_id"], node["addr"], 2)[0]["ts"]
     assert pipeline.status()["plugin_batches"] == 1
+
+
+def test_frames_of_one_node_share_a_feed_window(client, odd_ids):
+    """投递按窗攒、到点即关、尾窗由节拍兜底——三条路都有断言，少一条就是只能靠读代码知道的行。
+
+    真机 236 帧/s 逐帧投递时三支插件各丢 87.5%（2026-10-30 实测），攒窗是修它的那一步：
+    这里钉住的是它的三个面——同窗同节点合一批、窗到期被下一帧关掉、`tick()` 关掉还没到期的尾窗。
+    """
+    node = odd_ids
+    feeder = FakeFeeder()
+    pipeline = make_pipeline(
+        client,
+        resolver=FakeResolver({node["gateway_id"]: {node["ep"]: node["addr"]}}),
+        plugins=feeder,
+    )
+
+    pipeline.feed(node["gateway_id"], node["ep"], METRICS)
+    pipeline.feed(node["gateway_id"], node["ep"], METRICS)
+    pipeline.drain_all()
+    assert feeder.seen == [], "帧在窗里攒着，还没有任何投递"
+
+    pipeline.tick()
+    assert len(feeder.seen) == 1 and len(feeder.seen[0]) == 2, "同一节点的两帧合成一窗"
+
+    # 到点即关：把窗起点拨回窗口时长之前，下一帧就该先投旧窗、再开新窗
+    pipeline.feed(node["gateway_id"], node["ep"], METRICS)
+    pipeline.drain_all()
+    ((key, window),) = pipeline._feed_windows.items()
+    window.since -= timedelta(seconds=capture_module.FEED_WINDOW_S * 2)
+    pipeline.feed(node["gateway_id"], node["ep"], METRICS)
+    pipeline.drain_all()
+    assert len(feeder.seen) == 2 and len(feeder.seen[1]) == 1
+    assert len(pipeline._feed_windows[key].batches) == 1
+
+    pipeline.tick()
+    assert len(feeder.seen) == 3, "尾窗由节拍兜底关掉"
+    assert pipeline.status()["plugin_batches"] == 3
 
 
 def test_a_frame_nobody_claimed_is_never_handed_to_a_plugin(client, chain):
@@ -985,7 +1024,8 @@ def test_a_late_attributed_frame_is_handed_too(client, chain):
     resolver.tables[main["gateway_id"]] = {main["ep"]: main["addr"]}
     pipeline.tick()
 
-    (batch,) = feeder.seen
+    (window,) = feeder.seen
+    (batch,) = window
     assert batch.node_id == main["node_id"]
     assert [p.slot for p in batch.points] == [2, 4, 7]
 
@@ -1007,7 +1047,8 @@ def test_a_replayed_frame_reaches_the_plugin_as_mock(client, chain):
     pipeline.drain_all()
     pipeline.tick()
 
-    (batch,) = feeder.seen
+    (window,) = feeder.seen
+    (batch,) = window
     assert batch.source == "mock"
 
 
@@ -1064,6 +1105,7 @@ def test_a_refused_batch_is_counted_and_the_frame_still_goes_out(client, chain):
     feeder.outcome = "dropped_oldest"
     pipeline.feed(main["gateway_id"], main["ep"], METRICS)
     pipeline.drain_all()
+    pipeline.tick()  # 投递按窗攒：这一次的账要等尾窗关掉才出现
 
     status = pipeline.status()
     assert (status["plugin_batches"], status["plugin_refused"]) == (2, 1)
