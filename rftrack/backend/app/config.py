@@ -169,6 +169,22 @@ class Settings:
     #: 关掉是合法部署形态（也是 S7 的回滚位——`RFTRACK_PLUGINS_ENABLED=0` 之后采集链路与插件
     #: 上线前一模一样，不需要谁去挨个停用注册表里的行），健康检查照实说没启用、不算故障。
     plugins_enabled: bool = True
+    # --- S8：告警规则引擎（`services/alerts.py`）-------------------------------
+    #: 告警规则引擎的总开关。默认开：S8 交付的就是"启用了规则，判定自己长成告警候选"。
+    #: 关掉是合法部署形态（只要判定不要告警，回滚位与 `plugins_enabled` 同构），健康检查
+    #: 照实说没启用、不算故障。
+    alert_engine_enabled: bool = True
+    #: 引擎节拍（秒）。判定按 250 ms 投喂窗落库（③B 方案），2 s 一拍意味着告警最多晚
+    #: 两秒出头——页面上这是"几乎即时"。下限 0.5 s 不是实测：再快就是在空库上空转敲
+    #: SQLite，SD 卡（R11）上没有比这更亏的买卖。
+    alert_interval_s: float = 2.0
+    # --- S8：目标聚合引擎（`services/targets.py`）-------------------------------
+    #: 目标聚合引擎的总开关。默认开：S8 交付的就是"判定落库后自己长成候选目标时间线"。
+    #: 关掉是合法部署形态（只要告警不要目标聚合，回滚位与 `alert_engine_enabled` 同构），
+    #: 健康检查照实说没启用、不算故障。
+    target_engine_enabled: bool = True
+    #: 引擎节拍（秒）。与告警引擎同一个下限与同一条理由：再快就是在空库上空转敲 SQLite。
+    target_interval_s: float = 2.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "db_path", Path(self.db_path))
@@ -222,6 +238,10 @@ class Settings:
             raise ValueError(
                 "plugin_queue_limit 至少 1：0 等于插件队列只进不出，而现象只是「插件没产出」"
             )
+        if self.alert_interval_s < 0.5:
+            raise ValueError("alert_interval_s 至少 0.5 秒：再快就是在空库上空转敲 SQLite")
+        if self.target_interval_s < 0.5:
+            raise ValueError("target_interval_s 至少 0.5 秒：再快就是在空库上空转敲 SQLite")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
@@ -284,6 +304,14 @@ class Settings:
             plugins_enabled=_bool(
                 source.get("RFTRACK_PLUGINS_ENABLED", "1"), "RFTRACK_PLUGINS_ENABLED"
             ),
+            alert_engine_enabled=_bool(
+                source.get("RFTRACK_ALERT_ENGINE_ENABLED", "1"), "RFTRACK_ALERT_ENGINE_ENABLED"
+            ),
+            alert_interval_s=float(source.get("RFTRACK_ALERT_INTERVAL_S", "2")),
+            target_engine_enabled=_bool(
+                source.get("RFTRACK_TARGET_ENGINE_ENABLED", "1"), "RFTRACK_TARGET_ENGINE_ENABLED"
+            ),
+            target_interval_s=float(source.get("RFTRACK_TARGET_INTERVAL_S", "2")),
         )
 
     @property

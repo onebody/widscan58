@@ -161,6 +161,11 @@ export function createApi(options = {}) {
     /** 事件详情：`site` 可缺省（主键读不是跨场地扫表），带上了就是"这个场地下没有它"→ 404。 */
     eventDetail: (eventId, site = null) => get(`/api/events/${eventId}`, { site }),
 
+    /** 候选目标（S8）：列表按场地的"最近出没"窗口取，详情/复核同一条场地口径。 */
+    targetsFeed: (params = {}) => get("/api/targets", params),
+    targetDetail: (targetId, site = null) => get(`/api/targets/${targetId}`, { site }),
+    reviewTarget: (targetId, payload) => send("POST", `/api/targets/${targetId}/review`, payload),
+
     layouts: (siteId) => get("/api/layouts", { site: siteId }),
     createLayout: (payload) => send("POST", "/api/layouts", payload),
     patchLayout: (layoutId, payload) => send("PATCH", `/api/layouts/${layoutId}`, payload),

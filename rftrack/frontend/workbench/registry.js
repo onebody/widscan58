@@ -76,6 +76,30 @@ export const COMPONENTS = [
     source: "api",
     needs: ["hierarchy"],
   },
+  {
+    id: "channel-activity-heatmap",
+    name: "频道活动热图",
+    summary: "频道 × 时间的活动格：哪一档在什么时候越过阈值",
+    size: { w: 6, h: 4 },
+    min: { w: 4, h: 3 },
+    source: "api",
+    // 活动判据是"桶均值 ≥ 阈值"——同一个 `threshold_db` 生效值，规则插件用它判活动、
+    // 这格用它画格，两处不各设一个数。取数口与 rssi-trend 同源，依赖也同源。
+    needs: ["live"],
+    links: "channel",
+  },
+  {
+    id: "target-inspector",
+    name: "目标详情",
+    summary: "候选目标的证据、时间线与人工复核（确认 / 否定）",
+    size: { w: 6, h: 5 },
+    min: { w: 4, h: 4 },
+    source: "api",
+    // 读的是 /api/targets（按场地的候选目标）。它不订推送、也不必挑一块板——只要有
+    // 场地上下文就说得出话，所以挂在 `hierarchy` 这条通路上。
+    needs: ["hierarchy"],
+    links: "node",
+  },
 ];
 
 /**
@@ -99,22 +123,6 @@ export const PLANNED = [
     available: false,
     reason: "同上：瀑布图的三轴要 RAW IQ 或频谱帧，而 `/ws/live` 里没有这两类帧；本系统的原始 IQ 通路在原 `web/` 与 Android 端，不在这条链上",
     stage: null,
-  },
-  {
-    id: "channel-activity-heatmap",
-    name: "频道活动热图",
-    summary: "频道 × 时间的活动强度",
-    available: false,
-    reason: "取数口 `GET /api/samples/summary` 已在 S6 落地，缺的是按频道×时间闭合的活动判据（阈值来自 S8 的规则层），§7 把这格分给 S8",
-    stage: "S8",
-  },
-  {
-    id: "target-inspector",
-    name: "目标详情",
-    summary: "候选目标的证据、时间线与人工复核",
-    available: false,
-    reason: "事件表已在 S6 落地（`signal_event`），候选目标与人工复核那张表属 S8，今天没有任何真实目标可展示",
-    stage: "S8",
   },
   {
     id: "node-map",

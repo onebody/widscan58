@@ -118,6 +118,42 @@ def test_health_does_not_crash_on_an_unmigrated_database(tmp_path):
     assert body["instance_role"] == "site"
 
 
+# --- 告警引擎这一节（S8）------------------------------------------------------
+
+
+def test_health_says_alerts_are_disabled_when_the_engine_never_starts(client):
+    """夹具把告警引擎关掉了：这一节必须说"没启用、游标没动"，而不是给一个看着在跑的壳。"""
+    body = client.get("/api/health").json()
+    assert body["alerts"] == {
+        "enabled": False,
+        "interval_s": 2.0,
+        "runs": 0,
+        "errors": 0,
+        "last_run_at": None,
+        "last_error": None,
+        "cursor": None,
+        "findings_seen": 0,
+        "created": 0,
+        "merged": 0,
+        "resolved": 0,
+        "last_tick": None,
+        "problem": None,
+    }
+    # 与保留清理同一纪律：没启用是合法部署形态，不报 degraded。
+    assert body["status"] == "ok"
+
+
+def test_a_failed_alert_round_makes_health_degraded(client):
+    """上一轮告警判定真的失败了，就必须出现在 `problems` 里。"""
+    engine = client.app.state.alerts
+    engine.errors = 3
+    engine.last_error = "OperationalError: database is locked"
+    body = client.get("/api/health").json()
+    assert body["status"] == "degraded"
+    assert any("告警规则判定失败" in p and "locked" in p for p in body["problems"])
+    assert body["alerts"]["runs"] == 0, "失败的三轮不得记成跑过三轮"
+
+
 # --- 保留清理这一节（S6）------------------------------------------------------
 
 

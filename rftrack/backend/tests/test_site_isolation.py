@@ -415,6 +415,44 @@ def test_a_ws_subscription_for_one_site_receives_no_frames_from_the_other(rig):
     asyncio.run(scenario())
 
 
-@pytest.mark.skip(reason="告警表与规则引擎属 S8（S6 只有采集层写的观测事件）")
-def test_alerts_and_their_state_do_not_cross_sites():
-    """判据：A 场地的告警不得出现在 B 的列表或计数里。"""
+def test_alerts_and_their_state_do_not_cross_sites(client):
+    """判据：A 场地的告警不得出现在 B 的列表或计数里。（S8-2 解封：规则引擎已在）
+
+    复用 `test_alerts.py` 的摆位工具：A 场地专属规则 + A/B 各一条判定，引擎跑过之后
+    两边的列表必须各自只有自己的告警；A 的处置（ack）也不得改写 B 的任何一行。"""
+    from test_alerts import add_finding, make_rule
+
+    site = client.post("/api/sites", json={"name": "主场", "slug": "home"}).json()
+    relay = client.post("/api/relays", json={"site_id": site["site_id"], "name": "起点塔"}).json()
+    gateway = client.post(
+        "/api/gateways",
+        json={"relay_id": relay["relay_id"], "name": "pit", "kind": "usb-bridge"},
+    ).json()
+    away = client.post("/api/sites", json={"name": "客场", "slug": "away"}).json()
+    make_rule(client, site_id=site["site_id"], scope_id=site["site_id"])
+    add_finding(client, site_id=site["site_id"], gateway_id=gateway["gateway_id"])
+    add_finding(client, site_id=away["site_id"], gateway_id=gateway["gateway_id"])
+
+    from app.services.alerts import AlertEngine
+
+    engine = AlertEngine(client.app.state.db, client.app.state.settings)
+    engine.cursor = 0
+    engine.run_once()
+
+    # 摆位时刻固定在 BASE：列表默认窗口是"最近一段"，显式把窗口框过去。
+    window = {"from": "2026-10-30T11:00:00+00:00", "to": "2026-10-30T13:00:00+00:00"}
+    home = client.get("/api/alerts", params={"site": site["site_id"], **window}).json()["rows"]
+    theirs = client.get(
+        "/api/alerts", params={"site": away["site_id"], **window}
+    ).json()["rows"]
+    assert [r["site_id"] for r in home] == [site["site_id"]], "客场判定不该在主场的规则下响"
+    assert theirs == [], "A 场地的规则在 B 的列表里什么都不能有"
+
+    home_id = home[0]["alert_id"]
+    assert client.post(f"/api/alerts/{home_id}/ack").json()["status"] == "ack"
+    assert (
+        client.get("/api/alerts", params={"site": away["site_id"], **window}).json()["rows"]
+        == []
+    ), (
+        "主场处置自己的告警之后，客场的计数仍然必须一动不动"
+    )

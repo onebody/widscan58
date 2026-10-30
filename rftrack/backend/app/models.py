@@ -61,6 +61,15 @@ SITE_ORIGINS = ("local", "aggregated")
 #: 插件的作用域档位。与方案 §3 里 `alert_rule.scope`（S8）同一套词，但**不含 `node`**：
 #: 规则锁到单块板子会退化成"每块板一条规则"，而这三支规则的判断对象本来就是跨节点的。
 PLUGIN_SCOPES = ("global", "site", "relay", "gateway")
+#: 告警规则的匹配对象是**已落库的判定**（`plugin_finding`），不在投递热路径上，所以比插件多
+#: 一档 `node`（锁到单块板的告警是有真实用例的：某块板持续掉线）。`relay` 仍不收：
+#: 判定行没带 relay 身份，判它要 join，而它退化成"一个物理位置一条规则"——与插件同一结论。
+RULE_SCOPES = ("global", "site", "gateway", "node")
+#: 告警状态机。`silenced` 与 `ack` 分开：ack 是"人看过了"，silence 是"别再吵"，语义不同。
+ALERT_STATUSES = ("open", "ack", "silenced", "resolved")
+#: 候选目标的人工复核状态——**与算法侧分列**（任务书 §10.5），`unreviewed` 是显式值不是 NULL：
+#: "还没看"与"看了但没说"在复核闭环里是两句话。
+REVIEW_STATUSES = ("unreviewed", "confirmed", "rejected")
 #: `stopped → starting → running → failing → stopped`（方案 §2 的状态机表）。
 PLUGIN_STATUSES = ("stopped", "starting", "running", "failing")
 PLUGIN_LOG_LEVELS = ("info", "warning", "error")
@@ -616,4 +625,173 @@ class PluginFinding(Base):
     threshold: Mapped[float | None] = mapped_column(Float)
     #: 来路质量与观测同源：回放/模拟数据推出的判定必须带着 `mock`，否则一条推论会冒充实时。
     source: Mapped[str] = mapped_column(String(8), nullable=False, default="real")
+    evidence_json: Mapped[str | None] = mapped_column(Text)
+
+
+class AlertRule(Base):
+    """一条告警规则：**什么判定、算不算告警**。规则不产生读数，它只消费 `plugin_finding`。
+
+    与 `plugin_registry` 同构的两条设计决定：`scope_id` 多态指向**故意不建外键**（校验落
+    服务层）；`scope` 收 `global/site/gateway/node` 四档、**不收 `relay`**——判定行没带
+    relay 身份，判它要 join，且"一个物理位置一条规则"退化得没有用例（插件的
+    `EXECUTABLE_SCOPES` 同一结论，S7 已申报）。`site_id` 是另一回事：NULL = 实例级规则
+    （对所有场地生效），写数字 = 场地专属——"A 场地阈值不得惊动 B 场地"靠它成立。
+    """
+
+    __tablename__ = "alert_rule"
+
+    rule_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    site_id: Mapped[int | None] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT")
+    )
+    plugin_id: Mapped[str] = mapped_column(
+        ForeignKey("plugin_registry.plugin_id", ondelete="RESTRICT"), nullable=False
+    )
+    #: 匹配哪一种判定（`threshold_crossing` / `anomaly_rise` / …）。词表刻意不加 CHECK，
+    #: 理由与 `signal_event.kind` 相同：每认一种就改一次表结构是迁移债，不认识的原样存。
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="site")
+    scope_id: Mapped[int | None] = mapped_column(Integer)
+    #: 同一去重键再次命中、且上一条还没解决时，等多久才允许开新告警（秒）。
+    #: NULL = 只要旧告警没解决就永不新开（合并进旧行）——SD 卡上这是默认。
+    dedup_window_s: Mapped[int | None] = mapped_column(Integer, default=None)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class Alert(Base):
+    """一条告警（候选）：规则引擎从判定推出来的、**等人处置**的那一行。
+
+    与 `SignalEvent` 同一条纪律的三处体现：`site_id` 冗余列（按场地过滤不许 join）；
+    `value`/`threshold` 可空不写 0（0 dBFS 是满量程，是很强的假话）；`source` 与观测同源
+    （回放数据推出来的告警必须带着 `mock`）。
+
+    **去重键唯一**落在部分唯一索引 `uq_alert_dedup` 上：同一 `(rule, gateway, node, slot)`
+    只要还有一条没 `resolved`，就只允许存在一行——后续命中合并进旧行（`count` 涨、
+    `last_ts` 推进），`resolved` 之后的再命中才开新行。复核三列与算法列**分列**：
+    `status`/`silenced_until` 是处置状态，`review_json`/`reviewed_at` 是人写下的那句话，
+    `ack` 不等于复核过、复核过也不等于解决，混在一列里页面就没法分开画。
+    """
+
+    __tablename__ = "alert"
+    __table_args__ = (
+        Index("ix_alert_site_ts", "site_id", "ts"),
+        # 部分唯一索引（同 `uq_layout_active_site` 的先例）。判据要两个方向各一条：
+        # 同键第二条被拒（IntegrityError → 引擎合并），resolved 后同键可再开。
+        Index(
+            "uq_alert_dedup",
+            "dedup_key",
+            unique=True,
+            sqlite_where=text("status != 'resolved'"),
+        ),
+    )
+
+    alert_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("alert_rule.rule_id", ondelete="RESTRICT"), nullable=False
+    )
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT"), nullable=False
+    )
+    gateway_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gateway.gateway_id", ondelete="RESTRICT")
+    )
+    node_id: Mapped[int | None] = mapped_column(ForeignKey("node.node_id", ondelete="RESTRICT"))
+    slot: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    metric: Mapped[str | None] = mapped_column(String(16))
+    value: Mapped[float | None] = mapped_column(Float)
+    threshold: Mapped[float | None] = mapped_column(Float)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    source: Mapped[str] = mapped_column(String(8), nullable=False)
+    dedup_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    #: 触发时的证据**拷贝**（判定行会被保留任务清掉，告警上的证据必须活过它）。
+    evidence_json: Mapped[str | None] = mapped_column(Text)
+    silenced_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_json: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CandidateTarget(Base):
+    """一个**疑似目标**：算法基于多条判定/观测建立的关联，与复核状态分列。
+
+    任务书 §7.3 的字段逐条落位：稳定 ID = 自增主键（行不删，复核被拒只是状态不是删除）；
+    首次/最近观测 = `first_seen_at`/`last_seen_at`；关联观测引用 = `track_observation`
+    那张表；来源节点与频道 = 观测行上；置信度 = `confidence` + `confidence_basis`
+    （**两个都必填才算数**：没有算法出处的装饰性数字正是 §10.5 禁的）；关联算法及版本 =
+    `producer`（与 `plugin_finding.producer` 同一形状）；复核 = `review_status` 三态 +
+    `review_json`；数据覆盖/未知项/局限 = `coverage_json`（可空但详情页必须把"没写局限"
+    如实画成"局限未申报"，不许渲染成"无局限"）。
+
+    **没有经纬度、没有轨迹坐标、没有距离方向**——RSSI 推不出这些（任务书 §7.4），
+    表里连列都不给，"不生成无来源坐标"就不再是纪律而是结构。
+    """
+
+    __tablename__ = "candidate_target"
+    __table_args__ = (Index("ix_target_site_last", "site_id", "last_seen_at"),)
+
+    target_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT"), nullable=False
+    )
+    label: Mapped[str | None] = mapped_column(String(120))
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    producer: Mapped[str] = mapped_column(String(80), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float)
+    #: 置信度怎么算出来的（规则名/输入/公式的一句话指针）。`confidence` 有值而这里空着
+    #: 是写入侧的错误，服务层校验。
+    confidence_basis: Mapped[str | None] = mapped_column(String(160))
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="unreviewed")
+    review_json: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    coverage_json: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+
+
+class TrackObservation(Base):
+    """目标时间线上的一条**关联观测引用**：目标与判定行之间"为什么算同一个"的那条边。
+
+    `finding_id` 可空 + `ondelete=SET NULL`：保留任务清判定行时引用溶解，但这一行留下的
+    证据**拷贝**（`evidence_json`，写边时从判定行抄来）不跟着消失——时间线必须活过它引用
+    的那批原始判定，否则保留策略一收紧历史目标就只剩个空壳。
+    """
+
+    __tablename__ = "track_observation"
+    __table_args__ = (Index("ix_obs_target_ts", "target_id", "ts"),)
+
+    obs_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    target_id: Mapped[int] = mapped_column(
+        ForeignKey("candidate_target.target_id", ondelete="CASCADE"), nullable=False
+    )
+    finding_id: Mapped[int | None] = mapped_column(
+        ForeignKey("plugin_finding.finding_id", ondelete="SET NULL")
+    )
+    site_id: Mapped[int] = mapped_column(
+        ForeignKey("site.site_id", ondelete="RESTRICT"), nullable=False
+    )
+    gateway_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gateway.gateway_id", ondelete="RESTRICT")
+    )
+    node_id: Mapped[int | None] = mapped_column(ForeignKey("node.node_id", ondelete="RESTRICT"))
+    slot: Mapped[int | None] = mapped_column(Integer)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    metric: Mapped[str | None] = mapped_column(String(16))
+    value: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(8), nullable=False)
     evidence_json: Mapped[str | None] = mapped_column(Text)

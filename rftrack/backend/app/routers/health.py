@@ -113,6 +113,14 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
     if plugins["problem"]:
         problems.append(plugins["problem"])
 
+    alerts = request.app.state.alerts.status()
+    if alerts["problem"]:
+        problems.append(alerts["problem"])
+
+    targets = request.app.state.targets.status()
+    if targets["problem"]:
+        problems.append(targets["problem"])
+
     return {
         "status": "ok" if not problems else "degraded",
         "problems": problems,
@@ -148,6 +156,14 @@ def health(request: Request, session: Session = Depends(get_session)) -> dict:
         # 这一节说的是"这台机器上的运输层还在不在跑"——后者坏了三支插件会一起不说话，
         # 而插件页上三支都显示 running 的上一拍。
         "plugins": plugins,
+        # 告警引擎这一节是 S8 的"判定为什么没有变成告警"：游标走到哪、看了几条判定、
+        # 推了几条/合并了几条/收了几条、上一轮的错。`/api/alerts` 说的是"现在挂着哪些告警"，
+        # 这一节说的是"推它们的那只手还在不在转"。
+        "alerts": alerts,
+        # 目标聚合引擎这一节与告警引擎同族："判定为什么没有长成目标时间线"——游标、
+        # 看了几条、开/并了几个目标、上一轮的错。`/api/targets` 说的是"现在挂着哪些
+        # 候选"，这一节说的是"聚它们的那只手还在不在转"。
+        "targets": targets,
         # `/ws/bridge` 的实时占用：谁在看哪块板、写权在谁手上。没人在连也要说得出口
         # （`sessions: []`）——"这张表还没做"和"现在确实没页在连"是两个不同的结论。
         "bridge": request.app.state.bridge.status(),

@@ -230,6 +230,55 @@ const detailAnswer = (id, overrides = {}) => ({
   ],
 });
 
+/** 一行候选目标：键与 `routers/targets.py::target_out` 一一对。 */
+const targetRow = (id, overrides = {}) => ({
+  target_id: id,
+  site_id: 1,
+  label: null,
+  kind: "threshold_crossing",
+  producer: "engine:target-associator@1",
+  confidence: 0.3,
+  confidence_basis: "0.2 + 0.1×关联判定数（当前 1），封顶 1.0",
+  first_seen_at: "2026-10-29T03:59:00+00:00",
+  last_seen_at: "2026-10-29T04:00:00+00:00",
+  review_status: "unreviewed",
+  reviewed_at: null,
+  ...overrides,
+});
+
+/** 一条时间线观测：键与 `obs_out` 一对一，证据是拷贝进来的 `{value, error}`。 */
+const targetObs = (overrides = {}) => ({
+  obs_id: 7,
+  finding_id: 11,
+  site_id: 1,
+  gateway_id: 20,
+  node_id: 30,
+  slot: 1,
+  ts: "2026-10-29T03:59:30+00:00",
+  metric: "rssi_db",
+  value: -58.4,
+  source: "real",
+  evidence: { value: { rssi_db: -58.4, threshold_db: -85 }, error: null },
+  ...overrides,
+});
+
+/** 一条 `GET /api/targets/{id}` 的详情：时间线 + 覆盖 + 复核 + 局限。 */
+const targetDetailAnswer = (id, overrides = {}) => ({
+  ...targetRow(id),
+  coverage: {
+    value: { observations: 1, merge_window_s: 300, unknowns: ["目标位置未知：RSSI 读数推不出距离、方位或坐标，本表不生成任何坐标"] },
+    error: null,
+  },
+  review: { value: null, error: null },
+  observations: [targetObs()],
+  limitations: [
+    "候选目标由插件判定聚合而成（不是观测事实本身）：先看证据链与时间线再复核",
+    "读数只说明频段上的相对电平，不给距离、方位或坐标",
+    "confidence 是声明公式的输出（见 confidence_basis），只说明关联判定有多少条，不是精度",
+  ],
+  ...overrides,
+});
+
 function fakeApi(options) {
   const calls = [];
   const settle = (reply) => (reply && reply.__error ? Promise.reject({ reason: reply.__error, message: "桩：读数失败" }) : Promise.resolve(reply));
@@ -256,6 +305,27 @@ function fakeApi(options) {
     eventDetail: (eventId, site = null) => {
       calls.push({ name: "eventDetail", args: [eventId, site] });
       return settle(pick(options.detail ?? detailAnswer(eventId), { eventId, site }, calls.length));
+    },
+    targetsFeed: (params) => {
+      calls.push({ name: "targetsFeed", args: [params] });
+      const rows = typeof options.targets === "function" ? options.targets(params) : options.targets ?? [];
+      return settle({
+        site_id: params.site,
+        range: { from: "2026-10-29T03:00:00+00:00", to: "2026-10-29T04:00:00+00:00", span_s: 3600 },
+        filters: { review_status: null, node: null },
+        limit: 600,
+        truncated: false,
+        rows,
+      });
+    },
+    targetDetail: (targetId, site = null) => {
+      calls.push({ name: "targetDetail", args: [targetId, site] });
+      return settle(pick(options.targetDetail ?? targetDetailAnswer(targetId), { targetId, site }, calls.length));
+    },
+    reviewTarget: (targetId, payload) => {
+      calls.push({ name: "reviewTarget", args: [targetId, payload] });
+      const reply = typeof options.review === "function" ? options.review(payload) : options.review ?? targetDetailAnswer(targetId);
+      return settle(reply);
     },
     audit: () => ({ calls: [], dropped: 0 }),
   };
@@ -871,6 +941,168 @@ test('场地层级树：汇聚场地把滞后写在树上，空库说还没有�
 
   const emptyTree = render("site-tree", { contextState: emptyContext });
   assert.match(textOf(emptyTree.node), /库里还没有场地/);
+});
+
+// --- 频道活动热图 -------------------------------------------------------------
+// 与 rssi-trend 同一条取数口，但**不带 slot**：一次拿全部档位才画得成频道 × 时间。
+
+test('热图：一次取数不带 slot，参数带场地与节点——分八次问就是八倍库压', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    summary: summaryAnswer([summaryRow({ slot: 0, rssi_mean: -40 }), summaryRow({ slot: 1, rssi_mean: null })]),
+  });
+  const call = view.api.calls.find((row) => row.name === "samplesSummary");
+  assert.ok(call, "没有发取数请求");
+  assert.equal("slot" in call.args[0], false, "请求不许带 slot：全档位一次拿");
+  assert.equal(call.args[0].site, 1);
+  assert.equal(call.args[0].node, 30);
+  assert.match(textOf(view.node), /2 档/, "画的是桶里出现过的档，不是凭空八行");
+  assertNoInference(view.node);
+});
+
+test('热图：阈值生效时三色各说各话——越限、没越限、无均值不是一个颜色', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    effective: { threshold_db: -70 },
+    summary: summaryAnswer([summaryRow({ slot: 0, ts_bucket: 1_764_172_800, rssi_mean: -65 }), summaryRow({ slot: 1, ts_bucket: 1_764_172_800, rssi_mean: -80.5 }), summaryRow({ slot: 2, ts_bucket: 1_764_172_800, rssi_mean: null })]),
+  });
+  const classes = findByClass(view.node, "heat-cell").map((cell) => String(cell.props.class).split(/\s+/));
+  assert.ok(classes.some((names) => names.includes("heat-cell--active")), "越限的格子必须是活动色");
+  assert.ok(classes.some((names) => names.includes("heat-cell--idle")), "没越限的格子必须是静默色");
+  assert.ok(classes.some((names) => names.includes("heat-cell--empty")), "无均值的格子必须是空色——它不是 0，也不是静默");
+});
+
+test('热图：阈值没设就说画不出界线，有电平的格子不许被染成"无均值"', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    summary: summaryAnswer([summaryRow({ slot: 0, rssi_mean: -65 }), summaryRow({ slot: 1, rssi_mean: null })]),
+  });
+  assert.match(textOf(view.node), /没有生效的 threshold_db/);
+  const classes = findByClass(view.node, "heat-cell").map((cell) => String(cell.props.class).split(/\s+/));
+  assert.equal(classes.filter((names) => names.includes("heat-cell--empty")).length, 1, "只有真正没有均值的那格算空");
+  assert.ok(classes.some((names) => names.includes("heat-cell--idle")), "有电平的格子还在（灰），不是被当成空");
+});
+
+test('热图：点行首就是联动那一档，动作传的是档号', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    summary: summaryAnswer([summaryRow({ slot: 3, rssi_mean: -50 })]),
+  });
+  clickNode(view.node, (node) => hasClass(node, "clickable"));
+  assert.deepEqual(view.calls, [{ name: "linkChannel", args: [3] }]);
+});
+
+test('热图：没有选中的板就不发请求——node_id 是这一格的先决条件', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    contextState: { nodeId: null },
+    summary: summaryAnswer([]),
+  });
+  assert.equal(view.api.calls.some((row) => row.name === "samplesSummary"), false);
+  assert.match(textOf(view.node), /没有选中的板|还没有/);
+});
+
+test('热图：截断要说，"这一屏就是全部"不能默认成立', async () => {
+  const view = await renderLoaded("channel-activity-heatmap", {
+    summary: summaryAnswer([summaryRow()], { truncated: true, limit: 40 }),
+  });
+  assert.match(textOf(view.node), /已达上限 40/);
+});
+
+// --- 目标详情 -----------------------------------------------------------------
+// 注意：这一格的后端局限里合法地写着「不给距离、方位或坐标」这类否定句，
+// `assertNoInference` 的白名单认不得这句措辞，所以这里不做整树否定词扫描——
+// 该防的是"声称能定位"，防它的那道闸在 routers/targets.py 的 ALWAYS 里，pytest 钉着。
+
+test('目标列表：读的是 /api/targets，带上场地；空列表说为什么是空的', async () => {
+  const view = await renderLoaded("target-inspector", { targets: [] });
+  const call = view.api.calls.find((row) => row.name === "targetsFeed");
+  assert.ok(call, "没有发列表请求");
+  assert.equal(call.args[0].site, 1);
+  assert.match(textOf(view.node), /没有候选目标/);
+  assert.match(textOf(view.node), /聚合引擎/);
+});
+
+test('目标列表：类型按词表说人话，认不出的原样报出来', async () => {
+  const view = await renderLoaded("target-inspector", {
+    targets: [targetRow(1), targetRow(2, { kind: "slot_rise" }), targetRow(3, { kind: "weird_kind" })],
+  });
+  const text = textOf(view.node);
+  assert.match(text, /越限/);
+  assert.match(text, /档位抬升/);
+  assert.match(text, /未知类型 weird_kind/);
+  assert.match(text, /未复核/, "unreviewed 是初始态不是结论，页面上也不能写成「正常」");
+});
+
+test('目标详情：点开才取详情，局限逐条原样端上来，证据链是拷贝的那份', async () => {
+  const view = await renderLoaded("target-inspector", { targets: [targetRow(5)] });
+  clickNode(view.node, (node) => hasClass(node, "target"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const panel = view.tree();
+  const call = view.api.calls.find((row) => row.name === "targetDetail");
+  assert.ok(call, "点开没有发详情请求");
+  assert.deepEqual(call.args, [5, 1]);
+  const text = textOf(panel);
+  assert.match(text, /先看证据链与时间线再复核/, "后端那句局限必须原样出现");
+  assert.match(text, /还没有人工复核|局限未申报|相对电平/, "局限里至少有一条来自后端");
+  assert.match(text, /"threshold_db": -85/, "证据 JSON 原样贴出来，页面不挑拣字段");
+  assert.match(text, /0\.30/, "置信值与它的声明公式一起出现");
+  assert.match(text, /关联判定数/, "置信公式（confidence_basis）跟着数字走");
+});
+
+test('目标详情：复核按钮在场地实例上才画；点确认就 POST，返回的新详情接上', async () => {
+  const confirmed = targetDetailAnswer(5, {
+    review_status: "confirmed",
+    reviewed_at: "2026-10-29T04:05:00+00:00",
+    review: { value: { decision: "confirmed", note: "看过时间线，像真目标" }, error: null },
+  });
+  const view = await renderLoaded("target-inspector", { targets: [targetRow(5)], review: () => confirmed });
+  clickNode(view.node, (node) => hasClass(node, "target"));
+  await new Promise((resolve) => setImmediate(resolve));
+  clickNode(view.tree(), (node) => typeof node.props.onClick === "function" && textOf(node).includes("确认"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const posted = view.api.calls.find((row) => row.name === "reviewTarget");
+  assert.ok(posted, "复核没有发请求");
+  assert.deepEqual(posted.args, [5, { decision: "confirmed" }]);
+  assert.match(textOf(view.tree()), /看过时间线，像真目标/, "复核后的详情要换成服务端返回的那份");
+});
+
+test('目标详情：复核可以带说明，说明随请求体一起发', async () => {
+  const view = await renderLoaded("target-inspector", { targets: [targetRow(5)] });
+  clickNode(view.node, (node) => hasClass(node, "target"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const input = walk(view.tree()).find((node) => node.props && typeof node.props.onInput === "function");
+  assert.ok(input, "复核说明输入框不在");
+  input.props.onInput({ target: { value: "证据里那档从没进过帧" } });
+  clickNode(view.tree(), (node) => typeof node.props.onClick === "function" && textOf(node).includes("否定"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const posted = view.api.calls.find((row) => row.name === "reviewTarget");
+  assert.deepEqual(posted.args, [5, { decision: "rejected", note: "证据里那档从没进过帧" }]);
+});
+
+test('目标详情：汇聚实例只读——按钮不画，原因写在页面上', async () => {
+  const view = await renderLoaded("target-inspector", {
+    targets: [targetRow(5)],
+    contextState: { instanceRole: "aggregator" },
+  });
+  clickNode(view.node, (node) => hasClass(node, "target"));
+  await new Promise((resolve) => setImmediate(resolve));
+  const buttons = walk(view.tree()).filter((node) => typeof node.props.onClick === "function" && /确认|否定/.test(textOf(node)));
+  assert.equal(buttons.length, 0, "只读实例上不许有能点的复核按钮");
+  assert.match(textOf(view.tree()), /只读/);
+  assert.equal(view.api.calls.some((row) => row.name === "reviewTarget"), false);
+});
+
+test('目标详情：复核失败要把原因说出来，旧详情还在原地', async () => {
+  const view = await renderLoaded("target-inspector", { targets: [targetRow(5)], review: { __error: "aggregator_read_only" } });
+  clickNode(view.node, (node) => hasClass(node, "target"));
+  await new Promise((resolve) => setImmediate(resolve));
+  clickNode(view.tree(), (node) => typeof node.props.onClick === "function" && textOf(node).includes("确认"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(textOf(view.tree()), /复核没有成功：aggregator_read_only/);
+});
+
+test('目标详情：时间线里能切到那块板——联动动作传 node_id', async () => {
+  const view = await renderLoaded("target-inspector", { targets: [targetRow(5)] });
+  clickNode(view.node, (node) => hasClass(node, "target"));
+  await new Promise((resolve) => setImmediate(resolve));
+  clickNode(view.tree(), (node) => typeof node.props.onClick === "function" && /切到节点 30/.test(textOf(node)));
+  assert.deepEqual(view.calls, [{ name: "selectNode", args: [30] }]);
 });
 
 // --- 未注册占位件 -------------------------------------------------------------

@@ -190,9 +190,10 @@ KEYS: tuple[KeySpec, ...] = (
         "object",
         SITABLE,
         default={},
-        # 今天没有任何代码读它。S8 的告警规则表（`alert_rule`）才是它的执行者；在那之前
-        # 不许把它当成"已经在管事"——插件读的是下面四条各自的键，不是这个自由格式的对象。
-        pending_stage="S8",
+        # S8 起有了执行者，两个真实读者都在 `services/alerts.py`：①建规则没带去重窗口时
+        # 落这里的 `dedup_window_s`；②告警 silence 端点没带时长时落这里的 `silence_s`。
+        # 成员键在校验层拦（`_validate_alert_defaults`）——键拼错了读者只会按"没设"处理，
+        # 那种失效不能静默。
     ),
     # --- S7：三支内置规则插件的判据（执行者＝`app/plugins/*.py`）-----------------
     # 这四条的边界都写在这里而不是散在插件里：插件只从 `config` 读生效值，代码里不留任何
@@ -290,8 +291,24 @@ def validate(settings: Settings, key: str, value: Any) -> str | None:
     if spec.kind == "slots":
         return _validate_slots(settings, value)
     if spec.kind == "object":
-        return None if isinstance(value, dict) else "wrong_type"
+        if not isinstance(value, dict):
+            return "wrong_type"
+        return _validate_alert_defaults(value) if spec.name == "alert_defaults" else None
     return "unknown_kind"  # 注册表里加了没人认识的 kind：宁可报错也不当合法放过
+
+
+#: `alert_defaults` 的成员键词表（S8 的两个读者见 `services/alerts.py`）。值一律 ≥1 的整数：
+#: 去重窗口与静默时长都是"等多少秒"的数，0 或负数没有意义，小数只在制造歧义。
+ALERT_DEFAULTS_KEYS = ("dedup_window_s", "silence_s")
+
+
+def _validate_alert_defaults(value: dict) -> str | None:
+    for key, member in value.items():
+        if key not in ALERT_DEFAULTS_KEYS:
+            return "unknown_member"
+        if not isinstance(member, int) or isinstance(member, bool) or member < 1:
+            return "out_of_range"
+    return None
 
 
 def _validate_slots(settings: Settings, value: Any) -> str | None:

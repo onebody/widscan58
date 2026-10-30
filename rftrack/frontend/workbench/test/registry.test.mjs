@@ -8,9 +8,10 @@ import test from "node:test";
 
 import * as registry from "../registry.js";
 
-test("六个组件按来源分两路：实时推送与 REST 拉取，没有第三路", () => {
+test("八个组件按来源分两路：实时推送与 REST 拉取，没有第三路", () => {
   assert.deepEqual(registry.COMPONENTS.map((entry) => entry.id), [
     "channel-matrix", "channel-detail", "rssi-trend", "signal-events", "node-status", "site-tree",
+    "channel-activity-heatmap", "target-inspector",
   ]);
   assert.deepEqual(
     registry.COMPONENTS.filter((entry) => entry.source === "live").map((entry) => entry.id),
@@ -18,7 +19,7 @@ test("六个组件按来源分两路：实时推送与 REST 拉取，没有第�
   );
   assert.deepEqual(
     registry.COMPONENTS.filter((entry) => entry.source === "api").map((entry) => entry.id),
-    ["rssi-trend", "node-status", "site-tree"]
+    ["rssi-trend", "node-status", "site-tree", "channel-activity-heatmap", "target-inspector"]
   );
   // S5 那一路 `demo` 必须彻底不在：留着它，`registry.sourceWord("demo")` 就会给一格
   // 读不到真数的组件挂上"演示"这个词，而这一页再没有演示数据可演示。
@@ -64,7 +65,14 @@ test("每一格都要看能力的脸色：一条能力都没有时全部点不�
 });
 
 test("未上线条目必须写清理由与阶段，空着不写才是问题", () => {
-  assert.ok(registry.PLANNED.length >= 4);
+  // S8 落地时 `channel-activity-heatmap` 与 `target-inspector` 已从 PLANNED 升入 COMPONENTS：
+  // 升级的方式是"搬走"，不是"PLANNED 里再抄一份"——两头都有，页面上就会出现两个同名条目。
+  assert.ok(registry.PLANNED.length >= 3);
+  const plannedIds = registry.PLANNED.map((entry) => entry.id);
+  for (const promoted of ["channel-activity-heatmap", "target-inspector"]) {
+    assert.equal(plannedIds.includes(promoted), false, `${promoted} 已上线，不该还留在未上线清单里`);
+    assert.ok(registry.KNOWN_IDS.has(promoted), `${promoted} 升级后必须出现在 COMPONENTS`);
+  }
   for (const entry of registry.PLANNED) {
     assert.equal(entry.available, false);
     assert.ok(entry.reason.length > 0, `${entry.id} 缺理由`);

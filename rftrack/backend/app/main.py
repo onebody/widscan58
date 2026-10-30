@@ -45,13 +45,18 @@ from .routers import (
 # `settings` 这个名字在本函数里是 `Settings` 实例，模块只能带着别名进来。
 from .routers import settings as settings_routes
 from .routers import live as live_routes
+# 路由模块与服务模块同名（`alerts`），各自带别名进来。
+from .routers import alerts as alert_routes
+from .routers import targets as target_routes
 from .services import registry
+from .services.alerts import AlertEngine
 from .services.capture import CapturePipeline
 from .services.dialer import DialCoordinator, HttpTransport
 from .services.live import LiveHub
 from .services.plugin_runtime import PluginRuntime
 from .services.replay import ReplayRunner
 from .services.retention import RetentionRunner
+from .services.targets import TargetEngine
 from .services.ws_bridge import BridgeHub, WebsocketFactory
 
 
@@ -104,6 +109,13 @@ def create_app(
     hub = BridgeHub(upstream_factory or WebsocketFactory(), observer=capture)
     #: 保留清理：`retention_*` 那两个键从 S4 起就有生效值，这个 runner 是它们第一次真的删数据。
     retention = RetentionRunner(db, settings)
+    #: 告警引擎：读 `plugin_finding` 按规则落 `alert`。它不自己起上游，判定有没有新货由
+    #: 游标说了算；建在这里、起在 lifespan 最后（缺 `alert_rule` 表就不起，判据与
+    #: `registry.sync` 同一条——未迁移的库必须还能起来回答 `/api/health`）。
+    alert_engine = AlertEngine(db, settings)
+    #: 目标聚合引擎：读 `plugin_finding` 按观测身份聚成 `candidate_target` 时间线。与告警
+    #: 引擎同族同判据：建在这里、起在 lifespan 最后（缺 `candidate_target` 表就不起）。
+    target_engine = TargetEngine(db, settings)
     #: 回放：唯一一条"没有板子也能把采集整条链跑通"的数据源，来源一律 `mock`（见 replay.py）。
     replay = ReplayRunner(db, settings, capture)
 
@@ -126,10 +138,20 @@ def create_app(
         # 炸掉的是整个 lifespan，而"先去跑 migrate.py"这句话该由健康检查说。
         if db.has_table("plugin_registry"):
             await plugin_runtime.start()
+        # 告警引擎起在最后：注册表先同步、采集与插件先在跑，它才有新判定可读。
+        if db.has_table("alert_rule"):
+            await alert_engine.start()
+        # 目标聚合引擎最后起：它与告警引擎读同一张 plugin_finding，谁先谁后互不相干，
+        # 但排它后面让"告警先看见判定"成为稳定顺序（页面先响铃、后长目标）。
+        if db.has_table("candidate_target"):
+            await target_engine.start()
         yield
-        # 收摊顺序与起来相反：插件运行时先停，它一停就不再有人和保留清理抢着写库；
-        # 回放先停，它一停采集就不再收新字节；采集先于保留与拨号停，
+        # 收摊顺序与起来相反：目标引擎先停（它一停就不再消费判定，收摊途中不再有人写
+        # 目标两表）；告警引擎随后停；插件运行时先于采集与保留停——它一停就不再有人
+        # 和保留清理抢着写库；回放先停，它一停采集就不再收新字节；采集先于保留与拨号停，
         # 因为它最后那次刷要写的库与事件都还在；拨号最后停，因为它一停就没有新的节点行可读。
+        await target_engine.stop()
+        await alert_engine.stop()
         await plugin_runtime.stop()
         await replay.stop()
         await capture.stop()
@@ -148,6 +170,8 @@ def create_app(
     app.state.capture = capture
     app.state.plugins = plugin_runtime
     app.state.retention = retention
+    app.state.alerts = alert_engine
+    app.state.targets = target_engine
     app.state.replay = replay
     app.state.live = live
     app.state.head_revision = migrate.head_revision()
@@ -169,4 +193,7 @@ def create_app(
     app.include_router(ws.router)
     app.include_router(live_routes.router)
     app.include_router(plugins.router)
+    app.include_router(alert_routes.rules_router)
+    app.include_router(alert_routes.router)
+    app.include_router(target_routes.router)
     return app

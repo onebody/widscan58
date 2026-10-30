@@ -13,10 +13,12 @@
 import * as registry from "../registry.js";
 import { create as channelDetail } from "./channel-detail.js";
 import { create as channelMatrix } from "./channel-matrix.js";
+import { create as channelActivityHeatmap } from "./channel-activity-heatmap.js";
 import { create as nodeStatus } from "./node-status.js";
 import { create as rssiTrend } from "./rssi-trend.js";
 import { create as signalEvents } from "./signal-events.js";
 import { create as siteTree } from "./site-tree.js";
+import { create as targetInspector } from "./target-inspector.js";
 import { create as unknownPlugin } from "./unknown-plugin.js";
 
 export const IMPLEMENTED = {
@@ -24,6 +26,8 @@ export const IMPLEMENTED = {
   "channel-detail": channelDetail,
   "rssi-trend": rssiTrend,
   "signal-events": signalEvents,
+  "channel-activity-heatmap": channelActivityHeatmap,
+  "target-inspector": targetInspector,
   "node-status": nodeStatus,
   "site-tree": siteTree,
 };
