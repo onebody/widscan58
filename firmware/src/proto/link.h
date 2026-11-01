@@ -4,12 +4,21 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "frames.h"
 
 /* Where replies go. Frames default to USB; link_set_frame_sink() may point
  * them at the UART, whose byte stream carries them fine (the 0xA5 sync would
  * only matter if RotorHazard listened on the same port, which it doesn't
- * while we own it). */
-typedef enum { LINK_USB = 0, LINK_UART, LINK_COUNT } link_sink_t;
+ * while we own it). LINK_WS is the relay image's uplink. */
+typedef enum { LINK_USB = 0, LINK_UART, LINK_WS, LINK_COUNT } link_sink_t;
+
+/* Which queue a frame of this type goes to. RAWIQ stays on USB whatever the
+ * sink says: its chunks exceed the UART's TX ring and the WS frame size alike
+ * (the comment above). link.c and the host tests both call this, so the rule
+ * cannot be enforced in one and forgotten in the other. */
+static inline link_sink_t link_frame_queue(uint8_t type, link_sink_t sink) {
+    return type == FRAME_RAWIQ ? LINK_USB : sink;
+}
 
 void link_init(void);
 /* Create the USB sink's queue and writer task; uart_link.c owns the UART's
@@ -48,6 +57,10 @@ void link_flush(void);
 
 uint32_t link_drops(void);
 unsigned link_fill_permille(void);
+/* Queue fill of any sink, in permille. The scanner's backpressure has only
+ * ever looked at USB, so link_fill_permille() keeps meaning USB; NET STATUS
+ * asks for the WS one. */
+unsigned link_fill_permille_to(link_sink_t sink);
 size_t link_capacity(void);
 
 /* Read up to capacity bytes, waiting up to timeout_ms for the first

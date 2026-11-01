@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unity.h>
 #include "../../src/net/ws_codec.c"
+#include "../../src/proto/link.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -187,6 +188,18 @@ static void test_parse_url(void) {
     TEST_ASSERT_EQUAL_STRING("/node", path);
 }
 
+/* Which queue a frame of this type goes to, for a sink that may be WS or UART.
+ * link.c calls this same inline, so the test cannot drift from the firmware. */
+_Static_assert(LINK_WS == 2 && LINK_COUNT == 3, "link.h sink order changed; update ws_link and these tests");
+
+static void test_frame_queue(void) {
+    TEST_ASSERT_EQUAL(LINK_WS, link_frame_queue(FRAME_LEVELS, LINK_WS));
+    TEST_ASSERT_EQUAL(LINK_USB, link_frame_queue(FRAME_RAWIQ, LINK_WS));
+    TEST_ASSERT_EQUAL(LINK_USB, link_frame_queue(FRAME_RAWIQ, LINK_USB));
+    /* The UART's is not a queue at all: frame_put writes it straight out. */
+    TEST_ASSERT_EQUAL(LINK_UART, link_frame_queue(FRAME_SPECTRUM, LINK_UART));
+}
+
 int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_sha1_vectors);
@@ -198,5 +211,6 @@ int main(void) {
     RUN_TEST(test_read_head_peer_frames);
     RUN_TEST(test_head_truncation);
     RUN_TEST(test_parse_url);
+    RUN_TEST(test_frame_queue);
     return UNITY_END();
 }
