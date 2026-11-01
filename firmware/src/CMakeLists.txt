@@ -13,7 +13,16 @@ set(sources
     "scan/scanner.c"
     "dsp/psd.c"
     "dsp/fft_eval.c")
-set(includes "." "radio" "dsp" "scan" "proto")
+set(includes "." "radio" "dsp" "scan" "proto" "net")
+
+# Only the relay image carries the uplink. relay_build.py puts WIDSCAN_RELAY in
+# the environment cmake inherits; the scanner images must not gain a single
+# object, so this is the isolation gate Task 6 Step 4 checks with `find`.
+# The -D form is accepted too, for a PlatformIO that does not propagate ENV.
+if(DEFINED ENV{WIDSCAN_RELAY} OR WIDSCAN_RELAY)
+    list(APPEND sources "net/ws_codec.c" "net/ws_link.c" "net/net_prefs.c")
+endif()
+message(STATUS "widscan58 relay=${WIDSCAN_RELAY} env=$ENV{WIDSCAN_RELAY}")
 
 if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND sources "radio/s3/radio_s3.c" "radio/s3/recal_s3.c" "radio/s3/s3_fft_rnd.S")
@@ -36,7 +45,10 @@ idf_component_register(SRCS ${sources}
     INCLUDE_DIRS ${includes}
     LDFRAGMENTS ${ldfragments}
     REQUIRES esp_app_format esp_driver_gpio esp_driver_rmt esp_driver_uart esp_driver_usb_serial_jtag esp_wifi esp_phy esp_timer esp_hw_support
-             nvs_flash esp_rom espressif__esp-dsp)
+             nvs_flash esp_rom espressif__esp-dsp
+             # esp_wifi already requires these, so the scanner images link the
+             # same objects; the relay's sockets need them named for its use.
+             esp_event esp_netif lwip)
 
 # For INFO only, so a new commit recompiles just commands.c (FW_COMMIT_DATE is
 # set in the project's CMakeLists.txt).
