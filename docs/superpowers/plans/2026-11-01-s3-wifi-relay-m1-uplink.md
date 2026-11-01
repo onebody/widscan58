@@ -11,7 +11,9 @@
 **Spec:** `docs/superpowers/specs/2026-11-01-s3-wifi-relay-design.md`（§1 对账 / §2 拓扑 / §4 改动清单 / §5 M1 / §6 验收）。
 **不在本计划内（Plan B）**：C5→S3 的 UART 物理链路、921600 与 `uart_pace` 换算、C5 重烧、按端点的 CRC 观测、`PUT /api/nodes/{id}`、L2–L6。
 
-**本计划交付的判据**：spec §6 的「M1 上行回环」一行 + L0 三门槛不回归 + `[env:esp32s3]` 产物 sha256 不变。
+**本计划交付的判据**：spec §6 的「M1 上行回环」一行 + L0 三门槛不回归 + L6 的三条（两 env 编译过、扫描 env 体积差逐项可解释、扫描 env 真机回归回基线）。
+
+> **执行时对本计划的一处更正（先记录，后面各步按此执行）**：原写「`[env:esp32s3]` 产物 sha256 不变」作 L6，**在设计上不成立**——`firmware/CMakeLists.txt:12-24` 把 `git describe --dirty` 与 HEAD 提交时间灌进镜像（每次提交都变），而 Task 5 参数化的正是 `link.c` 里 USB/UART 共用路径。所以 L6 换成 spec §6 那三条；`/tmp/w58-probe/relay-baseline-sha.txt` 降级为**体积与"改动前存在性"的参照**，不再当相等断言。
 
 ---
 
@@ -53,12 +55,21 @@ git add docs/superpowers/specs/2026-11-01-s3-wifi-relay-design.md docs/superpowe
 git commit -m "wifi-relay: S3 作 Wi-Fi 中继宿主的设计与 M1 实现计划"
 ```
 
-- [ ] **Step 4：记录 `[env:esp32s3]` 基线指纹（Task 12 的对照物）**
+- [ ] **Step 4：记录 `[env:esp32s3]` 的改动前指纹（Task 12 的体积参照，不是相等断言）**
 
 ```bash
 cd firmware && pio run -e esp32s3 2>&1 | tail -3 && shasum -a 256 .pio/build/esp32s3/*.bin | tee /tmp/w58-probe/relay-baseline-sha.txt
 ```
 Expected: SUCCESS + 至少两行 sha256（`bootloader.bin`/`partition_table.bin`/`firmware.bin`）。**把输出抄进 Task 12 的对照表**，不要只留在终端。
+
+> **2026-11-01 已执行**（`fw-wifi-relay` @ `94e9736`，`pio run -e esp32s3` SUCCESS 72.24 s）：
+>
+> ```
+> 366656076e4d86620b47a26ce20b87a102228a96a8c810c8788ca60301a7f36b  bootloader.bin
+> db0552b42c23e75a2e63e667c418fa182799a896dea2734ac4501fb6ab81b1ef  firmware.bin
+> 45d10ab1990ddc6e744c90c415fb37e1beb4dc8a3a5078716a2424ef22709e4f  firmware.factory.bin
+> 520c18ca0bda73aed288d427d260ab051d71219f605707350e6c42401f4836fc  partitions.bin
+> ```
 
 > ⚠️ 不要并行跑两个 `pio`（本机有并发死锁史），也不要在这一步碰 `[env:esp32c5]`——它会把 `dependencies.lock` 的 target 字段改写（见 `firmware/CMakeLists.txt:5-8` 的注释）。
 
@@ -457,7 +468,7 @@ bool ws_parse_url(const char *url, char *host, size_t host_cap, uint16_t *port, 
 ```bash
 cd firmware && pio test -e native 2>&1 | tail -12
 ```
-Expected: 7 个新测试 PASS，且 `test_dsp` 原有测试仍全绿（**总数不许减少**）。
+Expected: 9 个新测试 PASS（实测 2026-11-01：`native:test_ws` 9 例全绿），且 `test_dsp` 原有测试仍全绿（**总数不许减少**；实测合并 26 例）。
 
 - [ ] **Step 7：提交**
 
@@ -881,12 +892,14 @@ endif()
 
 `idf_component_register` 的 `REQUIRES` 末尾加 `esp_event esp_netif lwip`（`mbedtls` 不需要——SHA-1/base64 在 `ws_codec.c` 里自带，这是它可宿主机测的代价与好处）。**`REQUIRES` 只在 relay 构建里需要**：CMake 无法按 env 条件化 `idf_component_register` 的可选性，多列三个组件对扫描 env 无害（esp_wifi 本来就 require 它们）。
 
-- [ ] **Step 4：确认扫描 env 的产物没被动**
+- [ ] **Step 4：确认扫描 env 没被拖进 relay 代码**
 
 ```bash
-cd firmware && pio run -e esp32s3 2>&1 | tail -3 && shasum -a 256 .pio/build/esp32s3/*.bin
+cd firmware && pio run -e esp32s3 2>&1 | tail -3
+find .pio/build/esp32s3 \( -name '*ws_codec*' -o -name '*ws_link*' -o -name '*net_prefs*' \) # 必须为空
+ls -l .pio/build/esp32s3/firmware.bin   # 基线：565024 B（Task 1）
 ```
-Expected: sha256 与 `/tmp/w58-probe/relay-baseline-sha.txt` **逐行相同**。不同就停下，回到 Step 2 的传导问题——**不许**用"差异很小"放行。
+Expected: `find` **零行**——这才是"relay 代码只进 relay env"的可判定据。体积与基线的差要逐项写下来（来源只可能是 Task 5 的 `frame_put` 参数化、`link_task` 形参与 enum 值）；**不再要求 sha256 与基线相等**（开头那条更正给了两条独立理由）。`find` 非空就是 Step 2 的传导出了问题，那才是必须停下回到 Step 2 的信号。
 
 - [ ] **Step 5：确认 relay env 能建**
 
@@ -966,7 +979,7 @@ Expected: 找到 scanner 任务的创建点与它的 `running` 闸门。**把行
 ```bash
 cd firmware && pio run -e esp32s3-relay 2>&1 | tail -4 && pio run -e esp32s3 2>&1 | tail -3 && shasum -a 256 .pio/build/esp32s3/*.bin
 ```
-Expected: 两个 SUCCESS；esp32s3 的 sha256 仍等于基线。
+Expected: 两个 SUCCESS；`pio` 汇总里 esp32s3 的 `RAM:`/`Flash:` 用量与 Task 6 Step 4 记下的**同一档**（跨提交时版本串长度会带来几字节抖动，所以看百分比而不是字节数）。本任务只加 `#if RX_WIFI_RELAY` 分支，扫描 env 不该有实质变化；真正的隔离证据是 Task 6 Step 4 那条 `find`（必须仍为零行），最后的实质判据是 Task 12 的真机回归。
 
 - [ ] **Step 5：提交**
 
@@ -1065,8 +1078,9 @@ git commit -m "wifi-relay: 中继目标不占 PHY 的启动分支（关联 AP �
 
 ```bash
 cd firmware && for e in esp32s3 esp32s3-relay esp32c5; do echo "== $e"; pio run -e $e 2>&1 | grep -E "RAM:|Flash:|SUCCESS|Error"; done
+find .pio/build/esp32s3 .pio/build/esp32c5 \( -name '*ws_codec*' -o -name '*ws_link*' -o -name '*net_prefs*' \) # 必须为空
 ```
-Expected: esp32s3 与基线同 sha；esp32c5 编译过且 Flash 占用相对本任务前 +≤200 B（那一个端口槽 + enum 值）。**esp32c5 必须重新烧板实测才算没回归**，未实测就在报告里写「未执行」。
+Expected: 三个 env 都 SUCCESS；`find` 零行（relay 代码没进任何扫描 env）；esp32s3 与 esp32c5 的 `firmware.bin` 相对 Task 6 的数字 **+≤200 B**（那一个端口槽 + enum 值 + `link_frame_queue` 内联）。**esp32c5 必须重新烧板实测才算没回归**，未实测就在报告里写「未执行」。
 
 - [ ] **Step 7：提交**
 
@@ -1184,13 +1198,16 @@ cd web && npm test 2>&1 | tail -3
 ```
 Expected: **587 passed / 1 skipped** · **214 passed** · **56 passed**。数字变了就是回归，不许解释成"环境差异"。
 
-- [ ] **Step 2：`[env:esp32s3]` sha256 对照（L6 的前半）**
+- [ ] **Step 2：L6 回退判据（替换原「sha256 相同」，理由见计划开头那条更正）**
 
 ```bash
-cd firmware && pio run -e esp32s3 2>&1 | tail -2 && shasum -a 256 .pio/build/esp32s3/*.bin > /tmp/w58-probe/relay-after-sha.txt
-diff /tmp/w58-probe/relay-baseline-sha.txt /tmp/w58-probe/relay-after-sha.txt && echo IDENTICAL
+cd firmware && pio run -e esp32s3 2>&1 | grep -E "RAM:|Flash:|SUCCESS"
+find .pio/build/esp32s3 .pio/build/esp32c5 \( -name '*ws_codec*' -o -name '*ws_link*' -o -name '*net_prefs*' \)
+ls -l .pio/build/esp32s3/firmware.bin .pio/build/esp32c5/firmware.bin   # 基线 565024 / 687632 B
 ```
-Expected: `IDENTICAL`。不同就逐条回看 Task 5/6/7/8 哪一步漏了 `#if RX_WIFI_RELAY`。
+(a) 两个扫描 env 编译 SUCCESS + `find` 零行 + 体积差逐项写来源；
+(b) **真机回归**：把 `[env:esp32s3]` 产物重烧回 S3，按 ① USB 的已记录口径跑 protocol MONITOR 60 s ×3，判据与 `rftrack-s3-c5-dual-usb` 那条基线同口径——`crc_errors`/`resync_bytes`/`dropped_chunks`/`stalls` 恒 0，S3 吞吐回到 52.1 KB/s ±10%，`NET` 命令在扫描 env 上报 `ERR command`（编译期隔离的正面证据），`CONFIG RESET` 后无 Wi-Fi 残留态；
+(c) (b) 没实际跑，报告里就写「扫描 env 的真机回归**未执行**」，不许用 (a) 的绿色代替它。
 
 - [ ] **Step 3：浏览器证据**
 
@@ -1220,6 +1237,6 @@ Expected: 两条都**零命中**（`192.168.99.*`/`203.0.113.x` 是文档占位�
 
 ## Self-review（写完计划后自查，已就地修正）
 
-1. **Spec 覆盖**：§2 的 S3→桥→平台边（Task 4/5/9/10）✅；§4 固件表八行（ws_link ✅ Task 4、uart_link 的 S3 分支 ❌ 属 M2、`LINK_WS` enum ✅ Task 5、NET 命令 ✅ Task 8、第三读任务 ✅ Task 8、C5 波特率 ❌ M2、platformio ✅ Task 6、产物逐字节 ✅ Task 12 Step 2）；§4 平台表两项（按端点观测 ❌、`PUT /api/nodes/{id}` ❌）**均在 Plan B**；§6 里 M1 那行 ✅ Task 11，L0 ✅ Task 12，L1 假中继 ⏸ Task 9 Step 2 只做了夹具（喂 C5 字节段属 M2）。缺口全部落在 M2/Plan B，不是遗漏。
+1. **Spec 覆盖**：§2 的 S3→桥→平台边（Task 4/5/9/10）✅；§4 固件表八行（ws_link ✅ Task 4、uart_link 的 S3 分支 ❌ 属 M2、`LINK_WS` enum ✅ Task 5、NET 命令 ✅ Task 8、第三读任务 ✅ Task 8、C5 波特率 ❌ M2、platformio ✅ Task 6、产物隔离 ✅ Task 12 Step 2（原写「产物逐字节」，执行时更正为三条判据，理由见计划开头））；§4 平台表两项（按端点观测 ❌、`PUT /api/nodes/{id}` ❌）**均在 Plan B**；§6 里 M1 那行 ✅ Task 11，L0 ✅ Task 12，L1 假中继 ⏸ Task 9 Step 2 只做了夹具（喂 C5 字节段属 M2）。缺口全部落在 M2/Plan B，不是遗漏。
 2. **占位符扫描**：Task 4 的实现按五条要点写（握手校验、退避、事件处理都在），其中 `NET RESET` 与 `ws_link_status` 留了明确的形状而非"自行实现"——执行者按 Task 8 Step 2 的 JSON 字段名产出；这是本计划里**唯一**允许未展开的两处，因为它们没有可判定分支。
 3. **类型一致性**：`link_sink_t` 的新值在 `link.h:12`、`frame_put`、`commands_task` 的 `(intptr_t)` 参数三处必须同序，Task 5 Step 5 用 `_Static_assert(LINK_WS == 2 && LINK_COUNT == 3)` 钉住；`ws_link_write/read/up/drops/status` 的签名在 Task 4 Step 1 的头文件里定，Task 5/8 只按它调用；`net_prefs_t` 五个字段在 Task 3 定义、Task 8 使用，长度上限（32/64/128/32）与命令行的 `char line[128]`（`commands.c:633`）相容——`NET PASS <63>` = 72 字符 < 127，成立。

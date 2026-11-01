@@ -92,7 +92,7 @@ Wi-Fi 侧不是瓶颈：局域网单条 WS，本地压测过 1134 帧/s（S9-4�
 | 命令面 | `commands.c` 新增 `NET SSID/PASS/URL/ON/OFF/STATUS/SAVE/RESET` | 沿用 `CONFIG SAVE/RESET` 的 NVS 约定（`commands.c:371`/`:380`）；**必须同时进 `exact[]` 白名单**（`:246-249`），否则命令根本不被识别 |
 | 第三个读任务 | `commands.c:756-758` 的同形写法：`if (link_ready(LINK_WS)) xTaskCreate…` | `ports` 是 `calloc(LINK_COUNT,…)`（`:741`，注释说明 C5 的 SRAM 很紧）⇒ `LINK_WS` 让 C5 也多一个槽位，用 `#if RX_TARGET_S3` 把它挡在扫描 env 外 |
 | C5 侧 | 波特率 115200→921600 + §3 的 pace 换算 | 其余零改动；RAWIQ 只走 USB 这条已有**执行点**（`link.c:100` 的 `if (frame_sink == LINK_UART && type != FRAME_RAWIQ)`），不只是 `link.h:42` 的注释 |
-| 构建 | `platformio.ini` 加 `[env:esp32s3-relay]` = esp32s3 超集 + `-DRX_WIFI_RELAY=1`；`esp_websocket_client` 进 `dependencies.lock` | `[env:esp32s3]` 的产物**必须逐字节不变**——这是「原功能不受损」的可判定据 |
+| 构建 | `[env:esp32s3-relay]` = esp32s3 超集 + `-DRX_WIFI_RELAY=1`；`net/**` 与 Wi-Fi 组件只进它；每 env 的 sdkconfig 覆盖放 `sdkconfig.defaults.esp32s3-relay`（`sdkconfig.*` 本身被 .gitignore 忽略） | 「原功能不受损」的**可判定据不能写成逐字节相同**：`CMakeLists.txt:12-24` 把 `git describe` 与 HEAD 提交时间灌进镜像（每次提交都变），而 Task 5 改的正是 `link.c` 里 USB/UART 共用的那段。改用下面 L6 的三条 |
 
 红线：未配置凭据（`NET` 关）时，中继 env 的 S3 除"不连网"外不应有任何行为差异；扫描 env 完全不编译 `net/**`。
 
@@ -124,13 +124,13 @@ M1 是 M2 的严格子集，且能在 C5 缺席时独立取得真机证据——
 | L3 断网重连 | 路由器断电 60 s 再回 | ≤30 s 内自动重连；平台侧 `offline`→`active` 回弹**一次且只一次**；重连期不出现假活（在列表但 0 帧） | 已通过真实硬件测试 |
 | L4 命令回环 | 页面经 WS 发 `PROTOCOL MONITOR` / `GAIN` / `SCAN START` | 每条 ≤500 ms 收到 ASCII 应答；应答落回**同一条** WS；不出现 `ERR uart_rh` | 已通过真实硬件测试 |
 | L5 帧对拍 | 同一块 C5 分别走 ①USB 与 ③Wi-Fi 各 60 s，两份字节过同一个 `frame_parser.decode` | 帧类型分布、档位序号、`rssi/snr` 取值集合、`channels` 数逐字段相同；只允许时间戳不同（都以接入机接收时刻打）；RAWIQ 只应出现在 USB 那一份 | 已通过真实硬件测试 |
-| L6 回退 | 重烧 `[env:esp32s3]` 产物 | 与该 env 今天的二进制**逐字节相同**；USB 走通、扫描正常、`CONFIG RESET` 后无 Wi-Fi 残留态 | 已通过真实硬件测试 |
+| L6 回退 | 重烧 `[env:esp32s3]`（扫描 env）产物，按 ① USB 的已记录口径跑 protocol MONITOR 60 s ×3；`esp32c5` 至少编译通过 + 体积对照 | **原来写的「与该 env 今天的二进制逐字节相同」在设计上不成立**，两条独立理由：①`firmware/CMakeLists.txt:12-24` 把 `git describe --dirty` 与 HEAD 提交时间灌进镜像，任何新提交都会变；②Task 5 参数化的正是 `link.c` 里 USB/UART 共用路径。改成三条真判据：(a) `esp32s3`/`esp32c5` 都 SUCCESS；(b) `firmware.bin` 体积差逐项可解释（参数化 + 一个端口槽 + enum 值），不设"必须为 0"；(c) 真机回到已记录基线：`crc_errors`/`resync_bytes`/`dropped_chunks`/`stalls` 恒 0，S3 吞吐 52.1 KB/s ±10%，且 `CONFIG RESET` 后无 Wi-Fi 残留态。(c) 没跑就只能标「已通过软件测试」并写明真机回归**未执行** | 已通过真实硬件测试 |
 
 ## 7. 分支、红线与脱敏
 
 - 新分支 `fw-wifi-relay`（从 `rf-track` 切）。`main`/`rf-track` 不动；`rf-track` 永不合入 `main`，只许 `main`→`rf-track` 单向。
 - 编译期隔离优先于运行时开关（理由见 §4 表末与「替代硬件类特性必须单开分支」这条既有约束）。
-- 依赖零新增：**不**引入 `esp_websocket_client`（它把 mbedTLS 拖进来，且会动 esp-sdr 钉死的依赖集）。`ws://` 的握手与成帧自带在 `src/net/ws_codec.c`（SHA-1 + base64 + 帧头），代价是 ~120 行自己维护的密码学胶水，好处是成帧层能在 `pio test -e native` 上跑真向量、且扫描 env 的产物可以逐字节不变。
+- 依赖零新增：**不**引入 `esp_websocket_client`（它把 mbedTLS 拖进来，且会动 esp-sdr 钉死的依赖集）。`ws://` 的握手与成帧自带在 `src/net/ws_codec.c`（SHA-1 + base64 + 帧头），代价是 ~120 行自己维护的密码学胶水，好处是成帧层能在 `pio test -e native` 上跑真向量、且不用在干净环境重验一套新钉版依赖。
 - 既有红线原样继承：队列有界 + drop-oldest 计数；插件崩了不拖垮 capture；离散信道 RSSI 不伪装成连续频谱；模拟数据标 MOCK/DEMO；未声明即 `unsupported`。
 - 推送前逐对象脱敏扫描：`git rev-list --objects fork/<branch>..HEAD` 逐 blob，正则**须含本机真实 Wi-Fi 网段**（那个地址只存在于本机与项目记忆里，本文档与计划里都不写出其字面值，扫描规则本身也不许把它当例子写进来）。本仓库口径：`rftrack/**` 一律 `192.168.99.*`、`docs/**` 一律 `203.0.113.x`；接入机的真实地址只许留在 /tmp 与本地库里。NVS 默认值与测试夹具不得出现真实 SSID/密码。`origin`（CapnBry/widscan58）永不推；只推 `fork`。
 - 烧 S3 前确认串口空闲、且用户没在网页端占着板子；S3 原固件（QiYun-LapTimer-Node）4 MB 整片备份仍在 `/tmp/w58-probe/s3-full-4MB-backup.bin`；S3 bootloader 偏移 0x0、C5 是 0x2000，别混。
