@@ -1233,6 +1233,12 @@ git rev-list --objects rf-track..HEAD | awk '{print $1}' | git cat-file --batch-
 ```
 Expected: 两条都**零命中**（`192.168.99.*`/`203.0.113.x` 是文档占位，不属于本机网段，不会进 `$REAL`）。命中就改到零再提交——`echo "$REAL"` 之类会把地址打进终端历史，所以脚本里不许打印它，只报 blob 号。推送只在用户明确要求时做，形式沿用既有那条 `-c http.proxy=socks5://…push fork fw-wifi-relay`。
 
+执行时的三条更正（脚本落在 `/tmp/w58-probe/scrub_scan.py`，不进仓库）：
+
+1. **判据从「本机 /24」扩成「任何非占位的私网字面量」**。只盯当前网段会漏掉历史地址（这台机器换过 Wi-Fi 段），而历史段同样是私网信息；命中即算硬命中，回显时把私网字面量与密钥一律打码，只报 `file:line`。
+2. **凭据来源不是只有 `ipconfig`**。网段现取之外，SSID 从 `/tmp/w58-probe/*.txt` 的 `"ssid":"…"` 精确抓，口令从注入脚本的引号串与 `NET SSID|PASS <值>` 抓——三条都只进内存，不进文档也不打印。
+3. **注入脚本的引号串按 WPA 口令长度 8–63 收窄**。原来的 `{4,80}` 把 `"GET "` 这类 HTTP 词当密钥，在 49 个 range blob 上造出 6 条假 `REAL-CREDENTIAL`（全是 `snprintf(msg, sizeof(msg), "GET %zu", len)` 那一行）。WPA2/WPA3 口令下限本就是 8 字符，短于 8 的引号串不可能是口令；SSID 由第 2 条的精确正则单独覆盖，所以收窄不降低灵敏度。收窄后：**私网零命中、真实凭据零命中**。
+
 ---
 
 ## Self-review（写完计划后自查，已就地修正）
