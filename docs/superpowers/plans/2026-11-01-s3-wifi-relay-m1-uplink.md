@@ -35,27 +35,27 @@
 
 **Files:** 无改动（只取证据）
 
-- [ ] **Step 1：确认工作树干净、串口空闲**
+- [x] **Step 1：确认工作树干净、串口空闲**
 
 ```bash
 cd /Users/fcj/workspace/FPV_space/widscan58-clone/repo && git status --short && ls /dev/cu.usbmodem*
 ```
 Expected: `?? docs/superpowers/`（两份未入库的设计文档）之外无改动。`?? docs/C5-S3-*ChatGPT采集.md` 这类采集件**永远不 commit**。
 
-- [ ] **Step 2：切分支**
+- [x] **Step 2：切分支**
 
 ```bash
 git checkout -b fw-wifi-relay rf-track
 ```
 
-- [ ] **Step 3：把设计文档与计划入库**
+- [x] **Step 3：把设计文档与计划入库**
 
 ```bash
 git add docs/superpowers/specs/2026-11-01-s3-wifi-relay-design.md docs/superpowers/plans/2026-11-01-s3-wifi-relay-m1-uplink.md
 git commit -m "wifi-relay: S3 作 Wi-Fi 中继宿主的设计与 M1 实现计划"
 ```
 
-- [ ] **Step 4：记录 `[env:esp32s3]` 的改动前指纹（Task 12 的体积参照，不是相等断言）**
+- [x] **Step 4：记录 `[env:esp32s3]` 的改动前指纹（Task 12 的体积参照，不是相等断言）**
 
 ```bash
 cd firmware && pio run -e esp32s3 2>&1 | tail -3 && shasum -a 256 .pio/build/esp32s3/*.bin | tee /tmp/w58-probe/relay-baseline-sha.txt
@@ -83,7 +83,7 @@ Expected: SUCCESS + 至少两行 sha256（`bootloader.bin`/`partition_table.bin`
 - Create: `firmware/test/test_ws/test_main.c`
 - Modify: `firmware/platformio.ini:47`（`[env:native]` 的 `-I`）
 
-- [ ] **Step 1：写头文件（先定接口，测试才有名字可指）**
+- [x] **Step 1：写头文件（先定接口，测试才有名字可指）**
 
 `firmware/src/net/ws_codec.h`：
 
@@ -135,7 +135,7 @@ bool ws_parse_url(const char *url, char *host, size_t host_cap, uint16_t *port, 
                   const char **why);
 ```
 
-- [ ] **Step 2：写失败测试**
+- [x] **Step 2：写失败测试**
 
 `firmware/test/test_ws/test_main.c`：
 
@@ -282,7 +282,7 @@ int main(void) {
 }
 ```
 
-- [ ] **Step 3：把测试环境接上（`[env:native]` 现在搜不到 `src/net`）**
+- [x] **Step 3：把测试环境接上（`[env:native]` 现在搜不到 `src/net`）**
 
 Modify `firmware/platformio.ini:47`：
 
@@ -292,14 +292,14 @@ build_flags = -std=gnu11 -lm -Isrc/scan -Isrc/dsp -Isrc/net -Isrc/proto
 
 （`-Isrc/proto` 是给 Task 5 的 `test_frame_queue` 用的：它要 include 真的 `link.h`，而不是复刻一份 enum。）
 
-- [ ] **Step 4：跑起来确认它失败**
+- [x] **Step 4：跑起来确认它失败**
 
 ```bash
 cd firmware && pio test -e native -f test_ws 2>&1 | tail -15
 ```
 Expected: 编译失败 `fatal error: ../../src/net/ws_codec.c: No such file or directory`（或 `unity` 报 0 个测试）。**不许**看到 PASS。
 
-- [ ] **Step 5：写实现**
+- [x] **Step 5：写实现**
 
 `firmware/src/net/ws_codec.c`：
 
@@ -463,14 +463,14 @@ bool ws_parse_url(const char *url, char *host, size_t host_cap, uint16_t *port, 
 }
 ```
 
-- [ ] **Step 6：跑起来确认它通过**
+- [x] **Step 6：跑起来确认它通过**
 
 ```bash
 cd firmware && pio test -e native 2>&1 | tail -12
 ```
 Expected: 9 个新测试 PASS（实测 2026-11-01：`native:test_ws` 9 例全绿），且 `test_dsp` 原有测试仍全绿（**总数不许减少**；实测合并 26 例）。
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 git add firmware/src/net/ firmware/test/test_ws/ firmware/platformio.ini
@@ -487,7 +487,7 @@ git commit -m "wifi-relay: RFC6455 纯函数成帧层与宿主机测试（SHA-1/
 
 这段只有 NVS 胶水，没有可判定逻辑值得在宿主机上造假桩测（真正的输入校验在 `ws_codec` 和 Task 5 的 `NET` 处理器里）；它的验收是 Task 11 里 `NET SAVE` 之后重启仍连着。
 
-- [ ] **Step 1：写实现**
+- [x] **Step 1：写实现**
 
 `firmware/src/net/net_prefs.h`：
 
@@ -568,14 +568,14 @@ esp_err_t net_prefs_erase(void) { return nvs_flash_erase_partition("nvs"); }
 
 > `NET RESET` 用整分区擦除是**过狠**的：它会连 `CONFIG SAVE` 的计圈设置一起清掉。所以这里改成逐键擦：把 `net_prefs_erase` 写成 `nvs_open(NS, NVS_READWRITE)` + 四次 `nvs_erase_key`（忽略 `ESP_ERR_NVS_NOT_FOUND`）+ `nvs_commit`，并在实现里注明为什么不用 `nvs_flash_erase_partition`。
 
-- [ ] **Step 2：编译过（还没人调用它，只验证头文件与 API 名）**
+- [x] **Step 2：编译过（还没人调用它，只验证头文件与 API 名）**
 
 ```bash
 cd firmware && pio run -e esp32s3-relay 2>&1 | tail -5
 ```
 Expected: 此刻 env 还不存在 → `UnknownEnv`。**这一步就是它失败的证明**；Task 6 建好 env 后回来复跑。
 
-- [ ] **Step 3：提交**
+- [x] **Step 3：提交**
 
 ```bash
 git add firmware/src/net/net_prefs.c firmware/src/net/net_prefs.h
