@@ -1,0 +1,22 @@
+# Relay-image-only sdkconfig layer; the scanner images must not move.
+# GPL-3.0-or-later.
+#
+# How this file is reached at all: the espressif32 builder only ever reads
+# PROJECT_DIR/sdkconfig.defaults — it has no `sdkconfig.defaults.<env>` naming
+# convention, and `custom_sdkconfig` (which could add one) is gated on the
+# Arduino framework. ESP-IDF itself does take a list, through the
+# SDKCONFIG_DEFAULTS environment variable (tools/cmake/project.cmake), so
+# relay_build.py passes this file as the second layer for this env only.
+#
+# sdkconfig.defaults trims the supplicant down to WPA2-PSK, which is the right
+# trade for a scanner that never associates. A station does have to: an AP
+# configured WPA3-SAE-only offers no PSK suite at all, so the association this
+# build sends is simply not one it can accept. Cost, measured on the relay
+# image: firmware.bin 625,344 -> 695,344 bytes (+70,000; SAE brings SAE_PK and
+# SAE_H2E with it), still 34% of the 0x1F0000 factory partition. The two
+# scanner images do not read this file and kept their sizes (esp32s3 565,024,
+# esp32c5 687,680).
+#
+# Not exercised against a WPA3-only AP: every M1 run on real hardware used a
+# WPA2-PSK network, which still associates and uplinks with this layer in.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y

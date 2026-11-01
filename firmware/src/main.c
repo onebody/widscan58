@@ -105,8 +105,9 @@ void app_main(void) {
     if (net_prefs_load(&prefs) != ESP_OK) link_printf("ERR net_prefs\n");
     BOOT_CHECK(rh_init());
     /* The ring first: the command task reads LINK_WS from boot, whether or not
-     * the uplink ever gets armed. */
-    if (!ws_link_open()) link_printf("ERR net_ring\n");
+     * the uplink ever gets armed. Returns esp_err_t, so ESP_OK is the success -
+     * `if (!...)` would report a working ring as a failed one. */
+    if (ws_link_open() != ESP_OK) link_printf("ERR net_ring\n");
     commands_task_start();
     if (prefs.on && prefs.ssid[0] && prefs.url[0] && !ws_link_start(&prefs))
         link_printf("ERR net_start\n"); /* NET STATUS carries the reason */

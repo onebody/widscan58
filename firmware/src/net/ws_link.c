@@ -73,6 +73,12 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
 
 static bool join_ap(void) {
     if (!netif_built) {
+        /* lwIP's TCP/IP task comes up with esp_netif_init, not with the netif
+         * itself. Without it the station associates, DHCP sends its first
+         * discover, and tcpip.c:257 asserts "Invalid mbox" - a reboot loop a
+         * saved NET ON walks straight back into. Idempotent, so an image that
+         * already ran it is unaffected. */
+        if (esp_netif_init() != ESP_OK) return false;
         if (!esp_netif_create_default_wifi_sta()) return false;
         /* The relay image never runs main.c's Wi-Fi bring-up, so the driver
          * init belongs here: esp_wifi_set_mode fails without it. RAM storage
@@ -142,37 +148,6 @@ static bool send_all(int fd, const uint8_t *buf, size_t n) {
         sent += (size_t)r;
     }
     return true;
-}
-
-/* The response is a run of NUL-terminated lines once \r and \n are folded;
- * empty strings in between are the seams, not the end. */
-static void fold_lines(char *resp, size_t len) {
-    for (size_t i = 0; i < len; i++)
-        if (resp[i] == '\r' || resp[i] == '\n') resp[i] = 0;
-}
-
-static void next_line(char **cursor, char *end) {
-    char *p = *cursor;
-    while (p < end && !*p) p++;
-    *cursor = p;
-    if (p < end) p += strlen(p);
-    *cursor = p + 1;
-}
-
-/* Value of a header, case-insensitive in the name, first match wins. */
-static bool header_value(char *resp, size_t len, const char *name, char *out, size_t out_cap) {
-    size_t nlen = strlen(name);
-    char *p = resp, *end = resp + len;
-    while (p < end) {
-        next_line(&p, end);
-        if (p >= end) break;
-        if (strncasecmp(p, name, nlen) != 0 || p[nlen] != ':') continue;
-        char *v = p + nlen + 1;
-        while (*v == ' ' || *v == '\t') v++;
-        strlcpy(out, v, out_cap);
-        return true;
-    }
-    return false;
 }
 
 static bool dial_and_handshake(const char *host, uint16_t port, const char *path) {
@@ -264,15 +239,15 @@ static bool dial_and_handshake(const char *host, uint16_t port, const char *path
         set_why("not_101");
         return false;
     }
-    fold_lines(resp, have);
+    ws_fold_response(resp, have);
     char value[64];
-    if (!header_value(resp, have, "Upgrade", value, sizeof(value)) || strcasecmp(value, "websocket") != 0) {
+    if (!ws_header_value(resp, have, "Upgrade", value, sizeof(value)) || strcasecmp(value, "websocket") != 0) {
         close(fd);
         sock = -1;
         set_why("no_upgrade");
         return false;
     }
-    if (!header_value(resp, have, "Sec-WebSocket-Accept", value, sizeof(value)) || strcmp(value, want) != 0) {
+    if (!ws_header_value(resp, have, "Sec-WebSocket-Accept", value, sizeof(value)) || strcmp(value, want) != 0) {
         close(fd);
         sock = -1;
         set_why("bad_accept");
@@ -306,7 +281,14 @@ static void serve_until_down(void) {
     int fd = sock;
     uint8_t hdr[10];
     for (;;) {
-        if (!ws_up || !want_up) return;
+        if (!ws_up || !want_up) {
+            /* This task owns the fd, and a stop must be the one to end the
+             * session: the bridge only drops the endpoint when the TCP closes,
+             * and returning without closing leaves a node that is "online" with
+             * nobody behind it. */
+            take_down("stopped");
+            return;
+        }
         size_t have = 0;
         ws_head_t h = {0};
         for (;;) {
@@ -441,11 +423,13 @@ bool ws_link_start(const net_prefs_t *p) {
 }
 
 bool ws_link_stop(void) {
+    /* Order matters: the dial task has to close the TCP while the STA is still
+     * up, or the FIN goes out over a dead interface and the bridge keeps the
+     * endpoint registered forever. */
     want_up = false;
+    for (int i = 0; i < 20 && ws_up; i++) vTaskDelay(pdMS_TO_TICKS(50));
     sta_up = false;
     esp_wifi_disconnect();
-    /* The dial task owns the socket, so "stopped" means it has noticed. */
-    for (int i = 0; i < 20 && ws_up; i++) vTaskDelay(pdMS_TO_TICKS(50));
     return !ws_up;
 }
 

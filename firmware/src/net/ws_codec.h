@@ -43,3 +43,12 @@ ws_head_t ws_read_head(const uint8_t *buf, size_t have);
  * LAN device (spec section 7). Returns false and sets *why if it can't. */
 bool ws_parse_url(const char *url, char *host, size_t host_cap, uint16_t *port, char *path, size_t path_cap,
                   const char **why);
+
+/* A handshake response the relay has read whole. Folding every CR and LF to
+ * NUL turns it into NUL-separated pieces: the status line, then one per
+ * header, then an empty piece for the blank line that ends it. */
+void ws_fold_response(char *resp, size_t len);
+/* The value of a header, name matched case-insensitively, first match wins.
+ * Returns false if no piece is that header. The name and the colon are read
+ * only within the piece, so "Connection: Upgrade" never answers "Upgrade". */
+bool ws_header_value(const char *resp, size_t len, const char *name, char *out, size_t out_cap);

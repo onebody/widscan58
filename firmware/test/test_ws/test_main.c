@@ -188,6 +188,73 @@ static void test_parse_url(void) {
     TEST_ASSERT_EQUAL_STRING("/node", path);
 }
 
+/* The 101 the relay must accept, byte for byte as serve.mjs writes it
+ * (web/serve.mjs:368-390). The scan found none of these headers: the old
+ * line-walker skipped every other piece, so a working bridge read as
+ * "no_upgrade" on the board while the browser and node clients connected. */
+static void test_handshake_response_headers(void) {
+    char buf[256];
+    size_t n = (size_t)sprintf(buf,
+                                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                                "Connection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n");
+    ws_fold_response(buf, n);
+    char value[64];
+    TEST_ASSERT_TRUE(ws_header_value(buf, n, "Upgrade", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("websocket", value);
+    /* the value stops at its own line: the Connection header below it is a
+     * separate piece, not a continuation. */
+    TEST_ASSERT_TRUE(ws_header_value(buf, n, "Connection", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("Upgrade", value);
+    TEST_ASSERT_TRUE(ws_header_value(buf, n, "Sec-WebSocket-Accept", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", value);
+    /* the same accept the client would compute for that RFC 6455 key */
+    char want[29];
+    ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==", want);
+    TEST_ASSERT_EQUAL_STRING(want, value);
+    /* names are case-insensitive, values are not - dial_and_handshake
+     * strcasecmps the Upgrade value itself. */
+    n = (size_t)sprintf(buf, "HTTP/1.1 101 Switching Protocols\r\nupgrade: WebSocket\r\n\r\n");
+    ws_fold_response(buf, n);
+    TEST_ASSERT_TRUE(ws_header_value(buf, n, "Upgrade", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("WebSocket", value);
+    /* a header the peer did not send answers false, not empty */
+    TEST_ASSERT_FALSE(ws_header_value(buf, n, "Sec-WebSocket-Accept", value, sizeof(value)));
+}
+
+/* The two ways a naive walk reads past its bounds, both live on the board's
+ * behalf: matching a header name inside another header's value, and relying on
+ * a terminator that the read length does not include. */
+static void test_header_stays_within_pieces(void) {
+    char buf[256];
+    size_t n;
+    /* "Connection: Upgrade" with no Upgrade header is the false-alive the
+     * handshake check exists to refuse. */
+    n = (size_t)sprintf(buf, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n");
+    ws_fold_response(buf, n);
+    char value[64];
+    TEST_ASSERT_FALSE(ws_header_value(buf, n, "Upgrade", value, sizeof(value)));
+    /* nor does a name that merely ends with the one asked for */
+    n = (size_t)sprintf(buf, "HTTP/1.1 101 x\r\nX-Proxy-Upgrade: websocket\r\n\r\n");
+    ws_fold_response(buf, n);
+    TEST_ASSERT_FALSE(ws_header_value(buf, n, "Upgrade", value, sizeof(value)));
+    /* no NUL inside the read window: everything from `n` on is filler, so an
+     * over-read lands in it. The last piece here is unterminated. */
+    memset(buf, 'Z', sizeof(buf));
+    n = (size_t)sprintf(buf, "HTTP/1.1 101 x\r\nUpgrade: websocket");
+    buf[n] = 'Z';
+    ws_fold_response(buf, n);
+    TEST_ASSERT_TRUE(ws_header_value(buf, n, "Upgrade", value, sizeof(value)));
+    TEST_ASSERT_EQUAL_STRING("websocket", value);
+    /* an over-long value is cut, not overflowed */
+    memset(buf, 'Z', sizeof(buf));
+    n = (size_t)sprintf(buf, "HTTP/1.1 101 x\r\nUpgrade: websocket\r\n\r\n");
+    buf[n] = 'Z';
+    ws_fold_response(buf, n);
+    char tight[4];
+    TEST_ASSERT_TRUE(ws_header_value(buf, n, "Upgrade", tight, sizeof(tight)));
+    TEST_ASSERT_EQUAL_STRING("web", tight);
+}
+
 /* Which queue a frame of this type goes to, for a sink that may be WS or UART.
  * link.c calls this same inline, so the test cannot drift from the firmware. */
 _Static_assert(LINK_WS == 2 && LINK_COUNT == 3, "link.h sink order changed; update ws_link and these tests");
@@ -211,6 +278,8 @@ int main(void) {
     RUN_TEST(test_read_head_peer_frames);
     RUN_TEST(test_head_truncation);
     RUN_TEST(test_parse_url);
+    RUN_TEST(test_handshake_response_headers);
+    RUN_TEST(test_header_stays_within_pieces);
     RUN_TEST(test_frame_queue);
     return UNITY_END();
 }

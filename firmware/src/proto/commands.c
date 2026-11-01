@@ -899,8 +899,11 @@ void commands_task_start(void) {
     /* A relay image has no scanner: scanner_init() never ran, so its mutex and
      * state do not exist, and its task would retune the PHY. The commands
      * still need a config to answer from, and rh_defaults owns the RotorHazard
-     * fields; what is left over reads as zeros and never reaches hardware. */
+     * fields; what is left over reads as zeros and never reaches hardware.
+     * The profile is the one exception: rh_apply_plan indexes into it
+     * (rh.c:103), so it is the same built-in rh_init() used. */
     memset(&c, 0, sizeof(c));
+    c.profile = profile_default(radio_caps()->target);
 #else
     scanner_get_config(&c);
 #endif

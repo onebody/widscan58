@@ -1,6 +1,7 @@
 /* GPL-3.0-or-later. */
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "ws_codec.h"
 
 static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -176,4 +177,36 @@ bool ws_parse_url(const char *url, char *host, size_t host_cap, uint16_t *port, 
     }
     strcpy(path, slash);
     return true;
+}
+
+void ws_fold_response(char *resp, size_t len) {
+    for (size_t i = 0; i < len; i++)
+        if (resp[i] == '\r' || resp[i] == '\n') resp[i] = 0;
+}
+
+bool ws_header_value(const char *resp, size_t len, const char *name, char *out, size_t out_cap) {
+    const size_t nlen = strlen(name);
+    const char *p = resp, *end = resp + len;
+    while (p < end) {
+        /* One piece at a time, each length read from its own NUL, so a piece
+         * never runs into the next and a header value never picks up text
+         * from the line below it. */
+        const char *stop = memchr(p, 0, (size_t)(end - p));
+        const size_t piece = stop ? (size_t)(stop - p) : (size_t)(end - p);
+        if (piece > nlen && p[nlen] == ':' && strncasecmp(p, name, nlen) == 0) {
+            const char *v = p + nlen + 1;
+            size_t rest = piece - nlen - 1;
+            while (rest && (*v == ' ' || *v == '\t')) {
+                v++;
+                rest--;
+            }
+            size_t n = rest < out_cap - 1 ? rest : out_cap - 1;
+            memcpy(out, v, n);
+            out[n] = 0;
+            return true;
+        }
+        if (!stop) break;
+        p = stop + 1;
+    }
+    return false;
 }
