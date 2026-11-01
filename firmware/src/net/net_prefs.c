@@ -69,3 +69,16 @@ esp_err_t net_prefs_erase(void) {
     nvs_close(h);
     return e;
 }
+
+/* "off" erases rather than storing 0: net_prefs_load() already reads a missing
+ * key as off, and put_str() keeps no empty values in the namespace either. */
+esp_err_t net_prefs_set_on(bool on) {
+    nvs_handle_t h;
+    esp_err_t e = nvs_open(NS, NVS_READWRITE, &h);
+    if (e != ESP_OK) return e;
+    e = on ? nvs_set_u8(h, "on", 1) : nvs_erase_key(h, "on");
+    if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    return e;
+}

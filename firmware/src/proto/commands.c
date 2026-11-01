@@ -36,6 +36,11 @@
 #include "scanner.h"
 #include "psd.h"
 #include "rh.h"
+#if RX_WIFI_RELAY
+#include "net_prefs.h"
+#include "ws_codec.h"
+#include "ws_link.h"
+#endif
 
 /* Multi-part replies are assembled here and queued as one item: the scanner
  * task queues frames concurrently, and a frame landing between the pieces of
@@ -242,7 +247,57 @@ static void set_proto(proto_t p) {
 /* RotorHazard's commands are 0x00..0x40 (reads), 0x51, 0x71..0x7E (writes). */
 static bool rh_text_start(uint8_t b) { return (b >= 'A' && b <= 'P') || b == 'T'; }
 
+#if RX_WIFI_RELAY
+/* "NET" and "NET <sub>", without catching a line that only starts with those
+ * three letters. RotorHazard sends no ASCII of its own, so letting the family
+ * through in its mode costs nothing - and it has to be let through, because
+ * the credentials go in before there is a monitor session to send them over. */
+static bool is_net(const char *line) { return !strcmp(line, "NET") || !strncmp(line, "NET ", 4); }
+
+/* The relay image has no scanner: main.c never calls scanner_init(), so its
+ * mutex does not exist and scanner_get_config() would block the command task
+ * forever - and the radio belongs to the Wi-Fi station, which a scan would
+ * retune away from the AP. So only these lines get answered at all. PROTOCOL
+ * MONITOR is refused on purpose (set_proto() reads and writes that same
+ * config); M2 gives the relay its own way to start the uplink. */
+static bool relay_allowed(const char *line) {
+    static const char *const exact[] = {"INFO", "PROTOCOL?", "REBOOT"};
+    if (is_net(line)) return true;
+    for (unsigned j = 0; j < sizeof(exact) / sizeof(exact[0]); j++)
+        if (!strcmp(line, exact[j])) return true;
+    return false;
+}
+
+/* NET <key> <value>: the value runs to the end of the line. Trailing blanks go
+ * (a serial terminal adds them; an SSID never means one), and quotes,
+ * backslashes and control bytes are refused here rather than at dial time -
+ * they would break NET STATUS's JSON as surely as they break the credential.
+ * cap is the field's own size, so an over-long value is an error instead of a
+ * silent cut. */
+static bool net_value(const char *v, char *dst, size_t cap) {
+    size_t n = strlen(v);
+    while (n && (v[n - 1] == ' ' || v[n - 1] == '\t')) n--;
+    if (!n || n >= cap) return false;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char ch = (unsigned char)v[i];
+        if (ch < ' ' || ch == 127 || ch == '"' || ch == '\\') return false;
+    }
+    memcpy(dst, v, n);
+    dst[n] = 0;
+    return true;
+}
+
+/* The NET working set: setters change this and NET SAVE writes it out, the way
+ * CONFIG SAVE works for the lap-timer settings. The on/off switch is the
+ * exception - net_prefs_set_on() persists it by itself, because NET OFF has to
+ * survive the power cycle that follows it. */
+static net_prefs_t net_ram;
+#endif
+
 static bool rh_allowed(const char *line) {
+#if RX_WIFI_RELAY
+    if (is_net(line)) return true;
+#endif
     static const char *const exact[] = {"PROTOCOL?", "PROTOCOL MONITOR", "PROTOCOL RH", "INFO", "CONFIG?",
                                         "METRICS RSSI", "METRICS SNR", "METRICS?", "GAIN?", "GAIN HARDWARE",
                                         "FILTER AUTO", "MODE GROUP", "MODE SINGLE", "CONFIG SAVE",
@@ -341,7 +396,16 @@ static void handle(char *line, link_sink_t sink) {
         return;
     }
     scan_config_t c;
+#if RX_WIFI_RELAY
+    if (!relay_allowed(line)) {
+        reply_text("ERR noscanner\n");
+        return;
+    }
+    /* Zeroes, not the scanner's: the branches this image answers never read it. */
+    memset(&c, 0, sizeof(c));
+#else
     scanner_get_config(&c);
+#endif
     char arg[32], arg2[32];
     uint32_t a, b, d;
     int32_t sa, sb, sd;
@@ -414,7 +478,12 @@ static void handle(char *line, link_sink_t sink) {
             if (c.spec_bins > 512) c.spec_bins = 512;
             scanner_set_config(&c);
         }
-        link_set_frame_sink(monitor && sink == LINK_UART ? LINK_UART : LINK_USB);
+        /* One rule instead of two special cases: the frames go back out the
+         * port the command came in on. USB and UART behave exactly as before;
+         * LINK_WS is the relay's, and Task 5's parameterized queue exists for
+         * this line. The pace clamp above stays UART-only - Wi-Fi bandwidth
+         * has nothing to do with a serial line rate (M2 changes that). */
+        link_set_frame_sink(monitor ? sink : LINK_USB);
         reply_text("OK\n");
     } else if (!strcmp(line, "ENABLE?")) {
         reply_printf("ENABLE %" PRIu32 "\n", c.enabled);
@@ -614,6 +683,86 @@ static void handle(char *line, link_sink_t sink) {
         if (!gpio_out_allowed(a)) { reply_text("ERR gpio_pin\n"); return; }
         gpio_out_set(a, s);
         reply_text("OK\n");
+#if RX_WIFI_RELAY
+    } else if (is_net(line)) {
+        /* "NET x" -> "x"; the value of a setter is everything past its key's
+         * space, so a passphrase with spaces in it arrives whole. */
+        const char *arg = line[3] ? line + 4 : line + 3;
+        const char *err = NULL;
+        if (!strncmp(arg, "SSID ", 5)) {
+            if (!net_value(arg + 5, net_ram.ssid, sizeof(net_ram.ssid))) err = "net_ssid";
+        } else if (!strncmp(arg, "PASS ", 5)) {
+            if (!net_value(arg + 5, net_ram.pass, sizeof(net_ram.pass))) err = "net_pass";
+        } else if (!strncmp(arg, "ID ", 3)) {
+            if (!net_value(arg + 3, net_ram.id, sizeof(net_ram.id))) err = "net_id";
+        } else if (!strncmp(arg, "URL ", 4)) {
+            char url[sizeof(net_ram.url)];
+            if (!net_value(arg + 4, url, sizeof(url))) err = "net_url";
+            else {
+                /* Parse it here, not in the dial task: a URL that cannot parse
+                 * would leave the relay in a retry loop whose command only ever
+                 * answered OK. Same host/path sizes as the dial, so what passes
+                 * here is what dials. */
+                char host[64], path[128];
+                uint16_t port = 80;
+                const char *why = NULL;
+                if (!ws_parse_url(url, host, sizeof(host), &port, path, sizeof(path), &why)) {
+                    reply_printf("ERR net_url %s\n", why ? why : "url");
+                    return;
+                }
+                strlcpy(net_ram.url, url, sizeof(net_ram.url));
+            }
+        } else if (!strcmp(arg, "ON")) {
+            if (!net_ram.ssid[0] || !net_ram.url[0]) {
+                reply_text("ERR net_config\n"); /* NET SSID + NET URL first */
+                return;
+            }
+            if (!ws_link_start(&net_ram)) {
+                reply_text("ERR net_start\n"); /* NET STATUS carries the reason */
+                return;
+            }
+            net_ram.on = true;
+            esp_err_t e = net_prefs_set_on(true);
+            if (e != ESP_OK) { reply_printf("ERR save %s\n", esp_err_to_name(e)); return; }
+            reply_text("OK\n");
+        } else if (!strcmp(arg, "OFF")) {
+            if (!ws_link_stop()) {
+                reply_text("ERR net_stop\n");
+                return;
+            }
+            net_ram.on = false;
+            esp_err_t e = net_prefs_set_on(false);
+            if (e != ESP_OK) { reply_printf("ERR save %s\n", esp_err_to_name(e)); return; }
+            reply_text("OK\n");
+        } else if (!strcmp(arg, "RESET")) {
+            ws_link_stop();
+            memset(&net_ram, 0, sizeof(net_ram));
+            esp_err_t e = net_prefs_erase();
+            if (e != ESP_OK) reply_printf("ERR net_erase %s\n", esp_err_to_name(e));
+            else reply_text("OK\n");
+            return;
+        } else if (!strcmp(arg, "SAVE")) {
+            esp_err_t e = net_prefs_store(&net_ram);
+            if (e != ESP_OK) reply_printf("ERR save %s\n", esp_err_to_name(e));
+            else reply_text("OK\n");
+            return;
+        } else if (!strcmp(arg, "STATUS")) {
+            /* The pass is deliberately absent: this reply goes to a log and to
+             * whoever is watching the port. */
+            char up[200];
+            ws_link_status(up, sizeof(up));
+            reply_add("NET {\"on\":%s,\"ssid\":\"%s\",\"url\":\"%s\",\"id\":\"%s\",%s,"
+                      "\"queue_permille\":%u,\"out_drops\":%" PRIu32 "}\n",
+                      net_ram.on ? "true" : "false", net_ram.ssid, net_ram.url, net_ram.id, up,
+                      link_fill_permille_to(LINK_WS), link_drops());
+            reply_send();
+            return;
+        } else {
+            err = "net_command";
+        }
+        if (err) reply_printf("ERR %s\n", err);
+        else reply_text("OK\n"); /* the four setters */
+#endif
     } else if (!strcmp(line, "BOOTLOADER")) {
         reply_text("OK BOOTLOADER\n");
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -663,7 +812,10 @@ static void line_byte(cmd_port_t *p, uint8_t b, link_sink_t sink) {
 static void commands_task(void *arg) {
     link_sink_t sink = (link_sink_t)(intptr_t)arg;
     cmd_port_t *p = &ports[sink];
-    uint8_t buf[64];
+    /* As long as a line: the WS port hands over one whole frame per read, and a
+     * smaller buffer would lose the tail of a long command (USB and the UART
+     * keep it in their drivers, the ring does not). */
+    uint8_t buf[128];
     for (;;) {
         int n = link_read_from(sink, buf, sizeof(buf), p->probe ? PROBE_QUIET_MS : 20);
         int64_t now = esp_timer_get_time();
@@ -743,17 +895,41 @@ void commands_task_start(void) {
     if (!ports || !cmd_lock) return; /* without them there is no host protocol */
     /* Boot in RotorHazard mode (rh_init has run); monitor mode starts from the defaults. */
     scan_config_t c;
+#if RX_WIFI_RELAY
+    /* A relay image has no scanner: scanner_init() never ran, so its mutex and
+     * state do not exist, and its task would retune the PHY. The commands
+     * still need a config to answer from, and rh_defaults owns the RotorHazard
+     * fields; what is left over reads as zeros and never reaches hardware. */
+    memset(&c, 0, sizeof(c));
+#else
     scanner_get_config(&c);
+#endif
     other_cfg = c;
     rh_defaults(&c);
     timer_saved_from(&timer_builtin, &c);
     timer_saved = timer_builtin;
     timer_saved_load();
     timer_saved_apply(&c, &timer_saved);
+#if !RX_WIFI_RELAY
     scanner_set_config(&c);
+#else
+    /* The NET setters edit this copy and NET SAVE writes it out, so it is read
+     * once here. A failed load leaves zeroes, which is "never configured" -
+     * main.c already reported it, and the commands still work. */
+    net_prefs_load(&net_ram);
+#endif
     link_set_streaming(false);
     xTaskCreatePinnedToCore(commands_task, "cmd", 6144, (void *)(intptr_t)LINK_USB, 6, NULL, portNUM_PROCESSORS - 1);
     if (link_ready(LINK_UART))
         xTaskCreatePinnedToCore(commands_task, "cmd_uart", 6144, (void *)(intptr_t)LINK_UART, 6, NULL,
                                 portNUM_PROCESSORS - 1);
+#if RX_WIFI_RELAY
+    /* Commands over the uplink too: the platform's console reaches the relay
+     * through the bridge, and the replies go back the same way. The classifier
+     * needs no new case - a non-uppercase byte on a LINK_WS port is line input,
+     * not "RotorHazard came back", exactly as on USB. */
+    if (link_ready(LINK_WS))
+        xTaskCreatePinnedToCore(commands_task, "cmd_ws", 6144, (void *)(intptr_t)LINK_WS, 6, NULL,
+                                portNUM_PROCESSORS - 1);
+#endif
 }

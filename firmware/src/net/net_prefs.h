@@ -18,3 +18,8 @@ esp_err_t net_prefs_load(net_prefs_t *p);
 esp_err_t net_prefs_store(const net_prefs_t *p);
 /* Our five keys only - see the comment in net_prefs.c. */
 esp_err_t net_prefs_erase(void);
+/* The on/off switch alone, without the credentials: NET ON/OFF is an operator
+ * intent that must survive a power cycle, while a typed passphrase stays in
+ * RAM until NET SAVE. Storing the whole struct for a switch would write that
+ * passphrase to flash behind SAVE's back. */
+esp_err_t net_prefs_set_on(bool on);
