@@ -19,6 +19,10 @@
 #include "rh.h"
 #include "scanner.h"
 #include "status_led.h"
+#if RX_WIFI_RELAY
+#include "net_prefs.h"
+#include "ws_link.h"
+#endif
 
 /* Required by the stock RF test archive; no shell is exposed. */
 int cmd_parse(char *cmd, char *name, int *argc, char **argv) {
@@ -89,6 +93,25 @@ void app_main(void) {
     (void)status_led_init(); /* first for its heap; no LED or no memory is not fatal */
     link_init();
     BOOT_CHECK(esp_event_loop_create_default());
+#if RX_WIFI_RELAY
+    /* One PHY, one master: a station must sit on its AP's channel to catch
+     * beacons, and the esp-sdr path below would retune it out from under the
+     * association. So a relay host never becomes a receiver - and it does not
+     * even call scanner_init(), because that task's first apply_config() sets
+     * filter, gain and recalibration on the radio (scanner.c:186-188). What a
+     * relay forwards comes from the C5 over the UART (M2).
+     * ws_link.c owns esp_wifi_init and the STA mode, so no esp_wifi_* here. */
+    net_prefs_t prefs = {0};
+    if (net_prefs_load(&prefs) != ESP_OK) link_printf("ERR net_prefs\n");
+    BOOT_CHECK(rh_init());
+    /* The ring first: the command task reads LINK_WS from boot, whether or not
+     * the uplink ever gets armed. */
+    if (!ws_link_open()) link_printf("ERR net_ring\n");
+    commands_task_start();
+    if (prefs.on && prefs.ssid[0] && prefs.url[0] && !ws_link_start(&prefs))
+        link_printf("ERR net_start\n"); /* NET STATUS carries the reason */
+    return;
+#endif
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     BOOT_CHECK(esp_wifi_init(&cfg));
     BOOT_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
